@@ -1,0 +1,43 @@
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.iml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+dist/
+build/
+
+# Java / JVM
+target/
+*.class
+*.log
+
+# Misc / data
+*.sqlite
+*.db
+*.h5
+*.parquet
+*.csv
+*.tsv
+*.feather
+*.pkl
+*.ckpt
+*.pt
+data/
+artifacts/
+outputs/
+logs/
+.DS_Store
