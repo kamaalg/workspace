@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+psycopg[binary]
+SQLAlchemy>=2.0
+python-dotenv
+earthengine-api
+shapely
+pyproj
