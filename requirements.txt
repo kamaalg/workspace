@@ -7,3 +7,8 @@ earthengine-api
 shapely
 pyproj
 streamlit
+openmeteo-requests
+requests-cache 
+retry-requests 
+numpy 
+pandas
