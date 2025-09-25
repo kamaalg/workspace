@@ -15,7 +15,13 @@ WORKDIR /workspace
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     if [ -f /root/.cargo/bin/uv ]; then src=/root/.cargo/bin/uv; else src=/root/.local/bin/uv; fi && \
     install -m 0755 -o root -g root "$src" /usr/local/bin/uv
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client \
+ && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
 
+# Install the dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 # Default shell
 SHELL ["/bin/bash", "-lc"]
 

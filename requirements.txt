@@ -6,3 +6,4 @@ python-dotenv
 earthengine-api
 shapely
 pyproj
+streamlit

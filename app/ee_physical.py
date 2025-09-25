@@ -70,20 +70,75 @@ def _fmt_date(img: Optional[ee.Image]) -> Optional[str]:
         return None
     return ee.Date(img.get("system:time_start")).format("YYYY-MM-dd").getInfo()
 
-def s2_best_image(aoi: ee.Geometry, start: str, end: str, max_cloud: int = 1000) -> Optional[ee.Image]:
-    col = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-           .filterBounds(aoi)
-           .filterDate(start, end)
-           .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", max_cloud))
-           .sort("CLOUDY_PIXEL_PERCENTAGE")) 
-    count = col.size().getInfo()
-    print("scenes:", count)
-    img = _pick_first(col)
+
+
+def s2_best_image(
+    aoi: ee.Geometry,
+    start: str,
+    end: str,
+    max_cloud: int = 90,
+    prob_thresh: int = 40
+) -> Optional[ee.Image]:
+    # S2 SR (A+B)
+    sr = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+          .filterBounds(aoi)
+          .filterDate(start, end)
+          .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", max_cloud)))
+
+    # S2 cloud probability
+    cp = (ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
+          .filterBounds(aoi)
+          .filterDate(start, end))
+
+    join = ee.Join.saveFirst('clouds')
+    cond = ee.Filter.equals(leftField='system:index', rightField='system:index')
+    joined = ee.ImageCollection(join.apply(sr, cp, cond))
+
+    def add_aoi_cloudprob(img):
+        prob = ee.Image(img.get('clouds')).select('probability')
+        mean_prob = prob.reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=aoi,
+            scale=20,
+            maxPixels=1e9
+        ).get('probability')
+        return ee.Image(img).set('aoi_cloud_prob', mean_prob)
+
+    ranked = (joined
+              .map(add_aoi_cloudprob)
+              .filter(ee.Filter.notNull(['aoi_cloud_prob']))
+            .sort('system:time_start',False))
+    try:
+        print("scenes:", ranked.size().getInfo())
+        print('SR count:', sr.size().getInfo())
+        print('CP count:', cp.size().getInfo())
+        print('JOINED (with clouds):', joined.size().getInfo())
+        print('RANKED (has aoi_cloud_prob):', ranked.size().getInfo())
+
+        dates = ee.List(ranked.aggregate_array('system:time_start')) \
+                .map(lambda t: ee.Date(t).format('YYYY-MM-dd'))
+        print('Dates:', dates.getInfo())
+
+        
+    except Exception:
+        pass
+
+    img = _pick_first(ranked)
     if img is None:
         return None
-    scl = img.select("SCL")
-    mask = (scl.neq(3).And(scl.neq(9)).And(scl.neq(10))) 
+
+    clouds = ee.Image(img.get('clouds')).select('probability')
+    scl = img.select('SCL')
+    cloud_ok = clouds.lt(prob_thresh)
+    scl_ok = (scl.neq(3)
+                .And(scl.neq(8))
+                .And(scl.neq(9))
+                .And(scl.neq(10))
+                .And(scl.neq(11)))
+
+    mask = cloud_ok.And(scl_ok)
     return img.updateMask(mask)
+
 
 def s2_indices(img: ee.Image) -> ee.Image:
     scaled = img.select(["B2","B3","B4","B8"]).multiply(0.0001).rename(["blue","green","red","nir"])
@@ -129,7 +184,7 @@ def physical_today(body: Dict[str, Any] = Body(...)):
     else:
         raise HTTPException(400, "Provide 'geom_geojson' (EPSG:4326) or 'geom_wkt' with 'epsg'.")
 
-    s2_start, s2_end = daterange(days_back=12)
+    s2_start, s2_end = daterange(days_back=100)
 
     s2_img = s2_best_image(aoi, s2_start, s2_end, max_cloud=100)
     if s2_img:
