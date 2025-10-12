@@ -36,5 +36,37 @@ services:
     ports:
       - "5433:5432"
 
+  airflow:
+    image: apache/airflow:2.9.3-python3.12   
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://app:app@host.docker.internal:5433/app
+      AIRFLOW__WEBSERVER__SECRET_KEY: changeme
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./requirements.txt:/opt/airflow/requirements.txt
+    user: "${AIRFLOW_UID:-50000}:0"
+    ports:
+      - "8080:8080"
+    command: >
+
+      bash -c "
+      airflow db migrate &&
+      airflow users create \
+        --username admin \
+        --password admin \
+        --firstname Admin \
+        --lastname User \
+        --role Admin \
+        --email admin@example.com || true &&
+      airflow webserver --port 8080 & airflow scheduler
+      "
+
+
+
+
 volumes:
   pgdata:

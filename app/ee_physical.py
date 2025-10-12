@@ -7,12 +7,12 @@ import matplotlib
 matplotlib.use("Agg")
 import ee
 from fastapi import APIRouter, Body, HTTPException
-
+import matplotlib.dates as mdates
 from shapely import wkt as shapely_wkt
 from shapely.ops import transform as shp_transform
 from shapely.geometry import mapping as shp_mapping
 from pyproj import Transformer
-
+import pandas as pd
 import psycopg
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
@@ -141,7 +141,7 @@ def s2_best_image(
                 .And(scl.neq(9))  # high clouds
                 .And(scl.neq(10)) # thin cirrus
                 .And(scl.neq(11)))# snow/ice
-        veg_only = scl.eq(4);
+        veg_only = scl.eq(4)#new change
 
         return img.updateMask(cloud_ok.And(scl_ok).And(veg_only))
 
@@ -196,7 +196,6 @@ def get_reduce_stats_with_timeout(img_idx, geom,
 
         out_expr = ee.Dictionary(expr).combine({"date": date_expr})
         try:
-            # per-attempt deadline
             try:
                 ee.data.setDeadline(deadline)  # seconds
             except Exception:
@@ -204,65 +203,150 @@ def get_reduce_stats_with_timeout(img_idx, geom,
             return out_expr.getInfo()
         except Exception as e:
             msg = str(e)
-            # Some errors aren't worth retrying
             if ('Invalid geometry' in msg or
                 'Feature has no geometry' in msg):
                 raise
-            # If it's memory related, retries with larger tileScale may help
             last_err = e
-            # Exponential backoff with jitter
             sleep = base_sleep * (2 ** attempt) * (1.0 + jitter * random.random())
             time.sleep(min(10.0, sleep))  # cap sleep
-    # Exhausted retries
     raise last_err
 
 
 # =========================
 # FastAPI router
 # =========================
+COTTON_PHASE_SPEC = [
+    # Off-season
+    (("01-01","04-14"), "Off-season",   {"NDVI": (0.05, 0.20), "EVI": (0.05, 0.15), "NDWI": (-0.20, 0.05)}),
+    # Growing season windows (example for temperate N. hemisphere)
+    (("04-15","05-15"), "Emergence",    {"NDVI": (0.15, 0.35), "EVI": (0.10, 0.25), "NDWI": (-0.05, 0.15)}),
+    (("05-16","06-15"), "Vegetative",   {"NDVI": (0.35, 0.55), "EVI": (0.20, 0.40), "NDWI": (0.00,  0.20)}),
+    (("06-16","07-10"), "Squaring",     {"NDVI": (0.50, 0.65), "EVI": (0.30, 0.45), "NDWI": (0.05,  0.25)}),
+    (("07-11","08-10"), "Flowering",    {"NDVI": (0.60, 0.80), "EVI": (0.35, 0.55), "NDWI": (0.05,  0.25)}),
+    (("08-11","09-15"), "Boll formation",{"NDVI": (0.55,0.75), "EVI": (0.35, 0.50), "NDWI": (0.00,  0.20)}),
+    (("09-16","10-31"), "Boll opening / Harvest", {"NDVI": (0.30, 0.55), "EVI": (0.20, 0.40), "NDWI": (-0.05, 0.15)}),
+    # Late off-season
+    (("11-01","12-31"), "Post-harvest", {"NDVI": (0.05, 0.25), "EVI": (0.05, 0.15), "NDWI": (-0.20, 0.05)}),
+]
+def _md(d: datetime) -> str:
+    return d.strftime("%m-%d")
 
+def _in_range(md_str: str, start_md: str, end_md: str) -> bool:
+    if start_md <= end_md:
+        return start_md <= md_str <= end_md
+    return md_str >= start_md or md_str <= end_md
+
+def phase_for_date(d: datetime):
+    md = _md(d)
+    for (win, name, ranges) in COTTON_PHASE_SPEC:
+        if _in_range(md, win[0], win[1]):
+            return name, ranges
+    return "Unknown", {"NDVI": (0.0, 1.0), "EVI": (0.0, 1.0), "NDWI": (-1.0, 1.0)}
+
+def classify_value(val: float, low_high: tuple[float, float]):
+    low, high = low_high
+    if val < low - 0.10:   
+        return "bad"
+    if val < low:          
+        return "warn"
+    return "ok"
 router = APIRouter()
 @router.get("/ee/physical/get_graphs")
-def get_graphs(rayon:str,ad:str):
+def get_graphs(rayon: str, ad: str, object_id: str):
     ensure_ee()
-    print(rayon,ad)
-
-    with psycopg.connect(os.getenv("DB_URL").replace("postgresql+psycopg://", "postgresql://"),row_factory=dict_row) as conn:
+    with psycopg.connect(os.getenv("DB_URL").replace("postgresql+psycopg://", "postgresql://"),
+                         row_factory=dict_row) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT  ad,rayon,NDVI,NDWI,EVI,object_id,img_date FROM sentinelresults WHERE rayon=%s AND ad=%s AND NDVI is NOT NULL AND NDWI IS NOT NULL AND EVI IS NOT NULL",(rayon,ad))
+            cur.execute("""
+                SELECT ad, rayon, NDVI, NDWI, EVI, object_id, img_date
+                FROM sentinelresults
+                WHERE rayon=%s AND ad=%s AND object_id=%s
+                  AND NDVI IS NOT NULL AND NDWI IS NOT NULL AND EVI IS NOT NULL
+                ORDER BY img_date ASC
+            """, (rayon, ad, object_id))
             rows = cur.fetchall()
-            print(rows)
-            ndvi = []
-            ndwi = []
-            evi = []
-            date = []
-            for row in rows:
-                ndvi.append(row["ndvi"])
-                ndwi.append(row["ndwi"])
-                evi.append(row["evi"])
-                date.append(row["img_date"])
-            fig, ax = plt.subplots(figsize=(10, 5))
-            x = range(len(date))
-            ax.plot(x, ndvi, marker="o", label="NDVI")
-            ax.plot(x, ndwi, marker="o", label="NDWI")
-            ax.plot(x, evi,  marker="o", label="EVI")
-            ax.set_title(f"Indices for rayon={rayon}, ad={ad} (n={len(rows)})")
-            ax.set_xlabel("Date")
-            ax.set_ylabel("Index value")
-            ax.set_xticks(x)
-            ax.set_xticklabels(date, rotation=45, ha="right")
-            ax.grid(True, linestyle="--", alpha=0.3)
-            ax.legend()
-            fig.tight_layout()
 
-            buf = io.BytesIO()
-            plt.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-            plt.close(fig)
-            buf.seek(0)
-            return StreamingResponse(buf, media_type="image/png")         # print(f"  Used image from {s2_date} with stats: {s2_stats}")
+    if not rows:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="No data found")
+
+    ndvi, ndwi, evi, dates = [], [], [], []
+    for r in rows:
+        ndvi.append(float(r["ndvi"]))
+        ndwi.append(float(r["ndwi"]))
+        evi.append(float(r["evi"]))
+        d = r["img_date"]
+       
+            
+        dates.append(d)
+
+    fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(12, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+
+    ax1.plot(dates, ndvi, marker="o", label="NDVI")
+    ax1.plot(dates, ndwi, marker="o", label="NDWI")
+    ax1.plot(dates, evi,  marker="o", label="EVI")
+    ax1.set_title(f"Indices for rayon={rayon}, ad={ad}, areaID={object_id} (n={len(rows)})")
+    ax1.set_ylabel("Index value")
+    ax1.grid(True, linestyle="--", alpha=0.3)
+    ax1.legend(loc="best")
+
+ 
+  
+
+    phases = []
+    ndvi_status, evi_status, ndwi_status = [], [], []
+    for d, v_ndvi, v_evi, v_ndwi in zip(dates, ndvi, evi, ndwi):
+        phase_name, ranges = phase_for_date(d)
+        phases.append(phase_name)
+        ndvi_status.append(classify_value(v_ndvi, ranges["NDVI"]))
+        evi_status.append(classify_value(v_evi, ranges["EVI"]))
+        ndwi_status.append(classify_value(v_ndwi, ranges["NDWI"]))
+
+
+    seg_start = 0
+    for i in range(1, len(dates) + 1):
+        if i == len(dates) or phases[i] != phases[seg_start]:
+            start_x = dates[seg_start]
+            end_x = dates[i-1]
+            ax2.axvspan(start_x, end_x, alpha=0.08)
+            mid_x = start_x + (end_x - start_x) / 2
+            ax2.text(mid_x, 2.6, phases[seg_start], ha="center", va="center", fontsize=8, rotation=0)
+            seg_start = i
+
+    color_map = {"ok": "tab:green", "warn": "orange", "bad": "red"}
+
+    ax2.scatter(dates, [2]*len(dates), s=35, c=[color_map[s] for s in ndvi_status], label="NDVI status", marker="o", edgecolors="none")
+    ax2.scatter(dates, [1]*len(dates), s=35, c=[color_map[s] for s in evi_status],  label="EVI status",  marker="o", edgecolors="none")
+    ax2.scatter(dates, [0]*len(dates), s=35, c=[color_map[s] for s in ndwi_status], label="NDWI status", marker="o", edgecolors="none")
+
+    ax2.set_yticks([0,1,2])
+    ax2.set_yticklabels(["NDWI","EVI","NDVI"])
+    ax2.set_ylim(-0.6, 2.8)
+    ax2.grid(True, axis="x", linestyle="--", alpha=0.3)
+    ax2.set_xlabel("Date")
+
+    from matplotlib.lines import Line2D
+    proxies = [
+        Line2D([0], [0], marker='o', color='none', markerfacecolor='tab:green', markersize=8, label='OK'),
+        Line2D([0], [0], marker='o', color='none', markerfacecolor='orange',    markersize=8, label='Slightly low'),
+        Line2D([0], [0], marker='o', color='none', markerfacecolor='red',       markersize=8, label='Very low'),
+    ]
+    ax2.legend(handles=proxies, loc="upper left", ncols=3, frameon=False, fontsize=8)
+
+    span_days = (max(dates) - min(dates)).days
+    if span_days < 120:
+        ax2.text(1.0, 1.02, f"Note: only {span_days} days of data (not full season).",
+                 transform=ax2.transAxes, ha="right", va="bottom", fontsize=8, alpha=0.8)
+
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")      
          
                     
-            return None
 
 @router.post("/ee/physical/today")
 def physical_today(body: Dict[str, Any] = Body(...)):

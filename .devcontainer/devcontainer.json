@@ -3,6 +3,11 @@
   "dockerComposeFile": "compose.yml",
   "service": "dev",
   "workspaceFolder": "/workspace",
+  "runArgs": [
+		"-v",
+		"/var/run/docker.sock:/var/run/docker.sock"
+	],
+  
   "customizations": {
     "vscode": {
       "extensions": [
@@ -10,7 +15,10 @@
         "ms-python.vscode-pylance",
         "charliermarsh.ruff",
         "ms-azuretools.vscode-docker"
-      ]
+      ],
+      "settings": {
+				"terminal.integrated.shell.linux": "/bin/bash"
+			}
     }
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh"
