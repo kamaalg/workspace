@@ -51,22 +51,16 @@ services:
     user: "${AIRFLOW_UID:-50000}:0"
     ports:
       - "8080:8080"
-    command: >
-
-      bash -c "
-      airflow db migrate &&
-      airflow users create \
-        --username admin \
-        --password admin \
-        --firstname Admin \
-        --lastname User \
-        --role Admin \
-        --email admin@example.com || true &&
-      airflow webserver --port 8080 & airflow scheduler
-      "
+    command: ["bash","-lc",
+      "airflow db migrate && \
+       airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true; \
+       exec airflow webserver --port 8080"
+    ]
 
 
 
 
 volumes:
   pgdata:
+    external: true
+    name: fastapi-pg-dev_devcontainer_pgdata
