@@ -3,6 +3,8 @@
   "dockerComposeFile": "compose.yml",
   "service": "dev",
   "workspaceFolder": "/workspace",
+  "runServices": ["dev", "postgres", "airflow", "frontend"],
+
   "runArgs": [
 		"-v",
 		"/var/run/docker.sock:/var/run/docker.sock"

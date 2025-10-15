@@ -1,0 +1,1960 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgroHesab vs Field Service - Agricultural Monitoring System</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .container {
+            width: 100%;
+            height: 100vh;
+            background: white;
+            padding: 0;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #52c41a 0%, #237804 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        .stat-number {
+            font-size: 2em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e8e8e8;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+        .control-group label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #333;
+        }
+        .control-group input, .control-group select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .btn {
+            padding: 10px 20px;
+            background: #52c41a;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+            transition: background-color 0.3s;
+        }
+        .btn:hover {
+            background: #73d13d;
+        }
+        .btn-secondary {
+            background: #1890ff;
+        }
+        .btn-secondary:hover {
+            background: #40a9ff;
+        }
+        .btn-danger {
+            background: #ff4d4f;
+        }
+        .btn-danger:hover {
+            background: #ff7875;
+        }
+        .results {
+            margin-top: 20px;
+        }
+        .operation-card {
+            background: white;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 10px;
+            transition: box-shadow 0.2s;
+            border-left: 4px solid #52c41a;
+        }
+        .operation-card:hover {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .operation-meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 10px;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #52c41a;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .error {
+            background: #fff2f0;
+            border: 1px solid #ffccc7;
+            color: #a8071a;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin: 20px 0;
+        }
+        .page-info {
+            color: #666;
+            font-size: 14px;
+        }
+        #map {
+            height: 600px;
+            width: 100%;
+            border-radius: 8px;
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        .map-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+            flex-shrink: 0;
+        }
+        .icon {
+            font-size: 1.2em;
+            margin-right: 5px;
+        }
+        .mission-details-popup .leaflet-popup-content-wrapper {
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+        }
+        .mission-details-popup .leaflet-popup-tip {
+            background: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+
+
+        <div class="map-controls" style="position: fixed; left: 310px; top: 45px; display: flex; gap: 8px; z-index: 5; margin-bottom: 20px;">
+            <!-- Action buttons next to filter container, aligned with mission count -->
+            <button class="btn btn-secondary" onclick="showMap()" id="show-map-btn" style="padding: 12px 15px; font-size: 14px; height: 48px;">
+                <span class="icon">🗺️</span> Map
+            </button>
+            <button class="btn btn-secondary" onclick="showList()" id="show-list-btn" style="padding: 12px 15px; font-size: 14px; height: 48px;">
+                <span class="icon">📋</span> List
+            </button>
+            <!-- Statistics button - hidden for now, keep for future use -->
+            <!-- <button class="btn btn-secondary" onclick="showBranchStats()" id="show-stats-btn" style="padding: 12px 15px; font-size: 14px; height: 48px;">
+                <span class="icon">📈</span> Statistics
+            </button> -->
+            <button class="btn" onclick="exportToCSV()" style="padding: 12px 15px; font-size: 14px; height: 48px;">
+                <span class="icon">📊</span> Export
+            </button>
+        </div>
+
+        <!-- Map Container with Side Filters -->
+        <div style="display: flex; flex: 1; min-height: 0; position: relative;">
+            <!-- Left side - Map Filters Container - ABSOLUTE POSITION FROM TOP -->
+            <div style="position: fixed; left: 0; top: 0; width: 300px; height: 100vh; z-index: 10;">
+                <div style="background: #f8f9fa; border-right: 1px solid #e8e8e8; padding: 15px; padding-top: 30px; height: 100%; box-sizing: border-box; overflow-y: auto; display: flex; flex-direction: column;">
+                    
+                    <!-- Mission Count inside container -->
+                    <div id="mission-summary" style="background: #f0f9ff; border: 1px solid #1890ff; padding: 12px 15px; border-radius: 6px; color: #1890ff; font-weight: bold; margin-bottom: 15px; text-align: center;">
+                        <div style="font-size: 18px; margin-bottom: 4px;">
+                            <span class="icon">📊</span> <span id="mission-count">Loading...</span>
+                        </div>
+                        <div style="font-size: 12px; font-weight: normal;">
+                            missions found
+                        </div>
+                    </div>
+                    
+                    <!-- Map Filters Title - NOW UNDER mission count -->
+                    <div style="font-weight: bold; color: #237804; margin-bottom: 15px; font-size: 16px;">
+                        🗺️ Map Filters
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: #333;">🏢 Branch</label>
+                        <select id="branch-filter" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                            <option value="">All Branches</option>
+                            <!-- Options will be loaded dynamically -->
+                        </select>
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: #333;">📐 Length Filter</label>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <select id="length-operator" style="padding: 6px; border: 1px solid #ddd; border-radius: 4px; width: 60px;">
+                                <option value=">" selected>></option>
+                                <option value="<"><</option>
+                            </select>
+                            <input type="number" id="length-filter" min="0" step="0.1" value="1" 
+                                   style="flex: 1; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                            <span style="color: #666;">km</span>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: #333;">🔍 Mismatch Type</label>
+                        <select id="type-filter" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                            <option value="is_in_null_basla_false">Başla-Son vaxt üzrə uyğunluq yoxdur, Perimeter metodu qeydlərində texnika id tapılmadı</option>
+                            <option value="no_spatial_match_true">Başla-Son vaxt üzrə uyğunluq yoxdur, Perimeter metodu qeydlərində poliqonla kəsişmə tapılmadı</option>
+                        </select>
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: #333;">🚜 Machinery ID</label>
+                        <input type="number" id="machinery-filter" placeholder="Enter machinery ID" 
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: #333;">📍 Geozona ID</label>
+                        <input type="number" id="geozona-filter" placeholder="Enter geozona ID" 
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: #333;">🆔 Mission ID</label>
+                        <input type="number" id="mission-filter" placeholder="Enter mission ID" 
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    
+                    <button class="btn" onclick="applyMapFilters()" style="width: 100%; padding: 10px; font-size: 14px; background: #52c41a; color: white; border: 1px solid #52c41a; border-radius: 4px; cursor: pointer; margin-bottom: 10px;">
+                        Apply Filters
+                    </button>
+                    
+                    <button class="btn" onclick="clearAllFilters()" style="width: 100%; padding: 8px; font-size: 13px; background: #f5f5f5; color: #666; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">
+                        Clear All Filters
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Right side - Map and List (same position) -->
+            <div style="margin-left: 320px; margin-right: 10px; margin-top: 100px; display: flex; flex-direction: column; flex: 1; min-height: 0;">
+                <!-- Map Container -->
+                <div id="map" style="flex: 1; width: 100%; border-radius: 8px; border: 1px solid #ddd; box-shadow: 0 4px 15px rgba(0,0,0,0.1); display: block; min-height: 400px;"></div>
+                
+                <!-- List Container (same position as map) -->
+                <div class="results" id="results" style="display: none; flex: 1; width: 100%; border-radius: 8px; border: 1px solid #ddd; box-shadow: 0 4px 15px rgba(0,0,0,0.1); background: white; overflow-y: auto; min-height: 400px;">
+                    <div class="loading" id="list-loading" style="display: none;">
+                        <div class="spinner"></div>
+                        <p>Loading filtered missions...</p>
+                    </div>
+                    <div id="list-content" style="padding: 15px;">
+                        <!-- Filtered missions will be loaded here dynamically -->
+                    </div>
+                </div>
+                
+                <!-- Statistics Container (same position as map) -->
+                <div class="statistics" id="statistics" style="display: none; flex: 1; width: 100%; border-radius: 8px; border: 1px solid #ddd; box-shadow: 0 4px 15px rgba(0,0,0,0.1); background: white; overflow-y: auto; position: relative; min-height: 400px;">
+                    <div class="loading" id="stats-loading" style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10;">
+                        <div class="spinner"></div>
+                        <p>Loading branch statistics...</p>
+                    </div>
+                    <div id="stats-content" style="padding: 20px; width: 100%; box-sizing: border-box; overflow: hidden;">
+                        <h3 style="color: #237804; margin: 0 0 30px 0; text-align: center;">📊 Branch Mission Statistics</h3>
+                        <div class="chart-container" style="height: 260px; margin-bottom: 40px; width: 100%; background: #fafafa; border: 1px solid #f0f0f0; border-radius: 6px; padding: 10px; box-sizing: border-box; position: relative; float: none; clear: both;">
+                            <canvas id="branchChart" style="display: block !important; width: 100% !important; height: 100% !important; max-width: 100% !important; float: none !important; position: static !important;"></canvas>
+                        </div>
+                        <div class="chart-container" style="height: 260px; width: 100%; background: #fafafa; border: 1px solid #f0f0f0; border-radius: 6px; padding: 10px; box-sizing: border-box; position: relative; float: none; clear: both;">
+                            <canvas id="typeChart" style="display: block !important; width: 100% !important; height: 100% !important; max-width: 100% !important; float: none !important; position: static !important;"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let map = null;
+        let currentView = 'map';
+        let allListData = []; // Store all data for pagination
+        let currentPage = 1;
+        const rowsPerPage = 25;
+        let markers = [];
+        let unfoundMissionsLayer = null;
+        let geozonaLayer = null;
+        let branchChart = null;
+        let typeChart = null;
+        const API_BASE = '/api';
+        // const API_BASE = 'http://localhost:8001/api';
+
+        // Initialize map on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeMap();
+            loadBranches();
+
+            // Explicitly set default values
+            document.getElementById('length-operator').value = '>';
+            document.getElementById('length-filter').value = '1';
+            document.getElementById('type-filter').value = 'is_in_null_basla_false'; // Set default mismatch type
+
+            // Apply default filter (length > 1km) on page load
+            setTimeout(() => {
+                applyMapFilters();
+                loadMissionCount(); // Load mission count after filters are applied
+            }, 1000); // Small delay to ensure map is fully loaded
+        });
+
+        function initializeMap() {
+            // Initialize map centered on Azerbaijan
+            map = L.map('map').setView([40.4093, 49.8671], 8);
+
+            // Define base layers
+            const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19
+            });
+
+            const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                attribution: '© Esri © DigitalGlobe © GeoEye © Earthstar Geographics © CNES/Airbus DS © USDA © USGS © AeroGRID © IGN © and the GIS User Community',
+                maxZoom: 18
+            });
+
+            // Add OpenStreetMap as default
+            osmLayer.addTo(map);
+
+            // Add GeoServer WMS layer for geozonas (geozona_2025) - bottom layer with performance optimizations
+            const geoserverUrl = 'https://agrogeo.agrone.az/geoserver/Field-Service/wms';
+            geozonaLayer = L.tileLayer.wms(geoserverUrl, {
+                layers: 'Field-Service:geozona_2025',
+                format: 'image/png',
+                transparent: true,
+                version: '1.1.0',
+                attribution: 'Geozonas Data',
+                crossOrigin: true,
+                zIndex: 1,
+                maxZoom: 16,  // Limit zoom to prevent excessive detail
+                tileSize: 256  // Standard tile size
+            });
+
+
+            // Add GeoServer WMS layer for mismatch cases - top layer with default filter to prevent memory issues
+            unfoundMissionsLayer = L.tileLayer.wms(geoserverUrl, {
+                layers: 'Field-Service:mismatch_cases',
+                format: 'image/png',
+                transparent: true,
+                version: '1.1.0',
+                attribution: 'Mismatch Cases Data',
+                crossOrigin: true,
+                zIndex: 2,
+                cql_filter: 'length > 1000'  // Default filter: length > 1km to prevent loading too much data
+            });
+
+            // Layer control with base maps
+            const baseMaps = {
+                "🗺️ Street Map": osmLayer,
+                "🛰️ Satellite": satelliteLayer
+            };
+
+            const overlayMaps = {
+                "🗺️ Geozonas": geozonaLayer,
+                "🚜 Mismatch Cases": unfoundMissionsLayer
+            };
+
+            // Add layer control to map
+            const layerControl = L.control.layers(baseMaps, overlayMaps, {
+                position: 'topright',
+                collapsed: false
+            }).addTo(map);
+            
+            // Add geozonas layer first (bottom layer)
+            geozonaLayer.addTo(map);
+            
+            // Add unfound missions layer on top
+            unfoundMissionsLayer.addTo(map);
+            
+            // Explicitly ensure unfound missions is on top
+            setTimeout(() => {
+                if (map.hasLayer(unfoundMissionsLayer)) {
+                    unfoundMissionsLayer.bringToFront();
+                }
+            }, 100);
+            
+            // Add click event for mission details
+            map.on('click', onMapClick);
+            
+            // Store references for later use
+            window.osmLayer = osmLayer;
+            window.satelliteLayer = satelliteLayer;
+            window.geozonaLayer = geozonaLayer;
+            window.layerControl = layerControl;
+        }
+
+
+        function showMap() {
+            currentView = 'map';
+            document.getElementById('map').style.display = 'block';
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('statistics').style.display = 'none';
+
+            // Update button states
+            document.getElementById('show-map-btn').style.background = '#1890ff';
+            document.getElementById('show-list-btn').style.background = '#52c41a';
+            // Statistics button is hidden, so skip updating it
+            // document.getElementById('show-stats-btn').style.background = '#52c41a';
+
+            setTimeout(() => {
+                map.invalidateSize();
+            }, 100);
+        }
+
+        async function showList() {
+            currentView = 'list';
+            document.getElementById('map').style.display = 'none';
+            document.getElementById('results').style.display = 'block';
+            document.getElementById('statistics').style.display = 'none';
+
+            // Update button states
+            document.getElementById('show-map-btn').style.background = '#52c41a';
+            document.getElementById('show-list-btn').style.background = '#1890ff';
+            // Statistics button is hidden, so skip updating it
+            // document.getElementById('show-stats-btn').style.background = '#52c41a';
+
+            // Load filtered data for list view
+            await loadListData();
+        }
+
+        async function showBranchStats() {
+            currentView = 'statistics';
+            document.getElementById('map').style.display = 'none';
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('statistics').style.display = 'block';
+            
+            // Update button states
+            document.getElementById('show-map-btn').style.background = '#52c41a';
+            document.getElementById('show-list-btn').style.background = '#52c41a';
+            document.getElementById('show-stats-btn').style.background = '#1890ff';
+            
+            // Load statistics data
+            await loadBranchStatistics();
+        }
+
+        async function loadListData() {
+            try {
+                // Show loading state
+                document.getElementById('list-loading').style.display = 'block';
+                document.getElementById('list-content').innerHTML = '';
+                
+                // Get current filter values (same as map filters)
+                const branchSelect = document.getElementById('branch-filter');
+                const selectedBranchId = branchSelect ? branchSelect.value : null;
+                const lengthFilter = document.getElementById('length-filter');
+                const lengthOperator = document.getElementById('length-operator');
+                const lengthValue = lengthFilter ? lengthFilter.value : null;
+                const typeFilter = document.getElementById('type-filter');
+                const typeValue = typeFilter ? typeFilter.value : null;
+                
+                // Get new filter values
+                const machineryFilter = document.getElementById('machinery-filter');
+                const geozonaFilter = document.getElementById('geozona-filter');
+                const missionFilter = document.getElementById('mission-filter');
+                
+                const machineryValue = machineryFilter ? machineryFilter.value : null;
+                const geozonaValue = geozonaFilter ? geozonaFilter.value : null;
+                const missionValue = missionFilter ? missionFilter.value : null;
+                
+                // Build API URL with same filters as map
+                let apiUrl = `${API_BASE}/metrics/export-csv?min_length=1`;
+                
+                if (selectedBranchId) {
+                    apiUrl += `&branch_id=${selectedBranchId}`;
+                }
+                
+                if (lengthValue && parseFloat(lengthValue) > 0) {
+                    const operator = lengthOperator ? lengthOperator.value : '>';
+                    if (operator === '>') {
+                        apiUrl += `&length_greater_than=${lengthValue}`;
+                    } else if (operator === '<') {
+                        apiUrl += `&length_less_than=${lengthValue}`;
+                    }
+                }
+                
+                if (typeValue) {
+                    apiUrl += `&type=${encodeURIComponent(typeValue)}`;
+                }
+                
+                // Add new filters
+                if (machineryValue && parseInt(machineryValue) > 0) {
+                    apiUrl += `&wialon_machinery_id=${machineryValue}`;
+                }
+                
+                if (geozonaValue && parseInt(geozonaValue) > 0) {
+                    apiUrl += `&geozona_id=${geozonaValue}`;
+                }
+                
+                if (missionValue && parseInt(missionValue) > 0) {
+                    apiUrl += `&mission_id=${missionValue}`;
+                }
+                
+                console.log('Loading list data from:', apiUrl);
+                
+                // Fetch CSV data and convert to JSON for display with timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+                
+                const response = await fetch(apiUrl, {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    throw new Error(`API request failed: ${response.status}`);
+                }
+                
+                // Get CSV text and parse it (with progress indication for large datasets)
+                const csvText = await response.text();
+                
+                // Show parsing progress for large CSV files
+                if (csvText.length > 500000) { // > 500KB
+                    const listContent = document.getElementById('list-content');
+                    listContent.innerHTML = '<div style="text-align: center; padding: 20px; color: #666;"><div class="spinner"></div><p>Processing large dataset...</p></div>';
+                }
+                
+                const csvData = parseCSVToJSON(csvText);
+                
+                // Hide loading state
+                document.getElementById('list-loading').style.display = 'none';
+                
+                // Display data as table
+                displayListTable(csvData);
+                
+            } catch (error) {
+                console.error('Error loading list data:', error);
+                document.getElementById('list-loading').style.display = 'none';
+                document.getElementById('list-content').innerHTML = `
+                    <div class="error">
+                        <strong>Error loading data:</strong> ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function parseCSVToJSON(csvText) {
+            const lines = csvText.split('\n');
+            if (lines.length < 2) return [];
+            
+            // Parse headers properly 
+            const headers = parseCSVLine(lines[0]);
+            const data = [];
+            
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+                
+                const values = parseCSVLine(line);
+                if (values.length === headers.length) {
+                    const obj = {};
+                    headers.forEach((header, index) => {
+                        obj[header] = values[index];
+                    });
+                    data.push(obj);
+                }
+            }
+            
+            return data;
+        }
+
+        function parseCSVLine(line) {
+            const values = [];
+            let current = '';
+            let inQuotes = false;
+            let i = 0;
+            
+            while (i < line.length) {
+                const char = line[i];
+                
+                if (char === '"') {
+                    if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+                        // Handle escaped quote ("")
+                        current += '"';
+                        i += 2;
+                    } else {
+                        // Toggle quote state
+                        inQuotes = !inQuotes;
+                        i++;
+                    }
+                } else if (char === ',' && !inQuotes) {
+                    // End of field
+                    values.push(current.trim());
+                    current = '';
+                    i++;
+                } else {
+                    current += char;
+                    i++;
+                }
+            }
+            
+            // Push the last field
+            values.push(current.trim());
+            
+            // Clean up values - remove surrounding quotes and unescape internal quotes
+            return values.map(v => {
+                let cleaned = v.trim();
+                if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+                    cleaned = cleaned.slice(1, -1);
+                }
+                return cleaned.replace(/""/g, '"'); // Unescape double quotes
+            });
+        }
+
+        function displayListTable(data) {
+            if (!data || data.length === 0) {
+                document.getElementById('list-content').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #666;">
+                        <h3>No missions found</h3>
+                        <p>No missions match the current filters. Try adjusting your filter criteria.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Store all data and reset to first page
+            allListData = data;
+            currentPage = 1;
+            
+            renderCurrentPage();
+        }
+        
+        function renderCurrentPage() {
+            if (!allListData || allListData.length === 0) return;
+            
+            // Calculate pagination
+            const totalRows = allListData.length;
+            const totalPages = Math.ceil(totalRows / rowsPerPage);
+            const startIndex = (currentPage - 1) * rowsPerPage;
+            const endIndex = Math.min(startIndex + rowsPerPage, totalRows);
+            const currentPageData = allListData.slice(startIndex, endIndex);
+            
+            // Key columns to display in the table
+            const displayColumns = [
+                { key: 'id', label: '🆔 Mission ID', width: '80px' },
+                { key: 'district_name', label: '🏢 Branch', width: '120px' },
+                { key: 'unit_name', label: '🚜 Machinery', width: '150px' },
+                { key: 'geozona_id', label: '📍 Geozone', width: '80px' },
+                { key: 'automatic_operation_started_at', label: '⏰ Started', width: '160px' },
+                { key: 'automatic_operation_ended_at', label: '🏁 Ended', width: '160px' },
+                { key: 'length', label: '📐 Length (m)', width: '100px' },
+                { key: 'type', label: '🔍 Type', width: '200px' }
+            ];
+            
+            let tableHTML = `
+                <div style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h3 style="color: #237804; margin: 0;">📋 Filtered Missions List (${totalRows.toLocaleString()} records)</h3>
+                        <p style="color: #666; margin: 5px 0;">Showing ${startIndex + 1}-${endIndex} of ${totalRows} records</p>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <button onclick="changePage(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''} 
+                                style="padding: 5px 10px; border: 1px solid #d9d9d9; background: ${currentPage <= 1 ? '#f5f5f5' : '#fff'}; cursor: ${currentPage <= 1 ? 'not-allowed' : 'pointer'};">« Previous</button>
+                        <span style="font-weight: bold; color: #666;">Page ${currentPage} of ${totalPages}</span>
+                        <button onclick="changePage(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}
+                                style="padding: 5px 10px; border: 1px solid #d9d9d9; background: ${currentPage >= totalPages ? '#f5f5f5' : '#fff'}; cursor: ${currentPage >= totalPages ? 'not-allowed' : 'pointer'};">Next »</button>
+                    </div>
+                </div>
+                <div style="overflow-x: auto; max-height: 600px; border: 1px solid #e8e8e8; border-radius: 6px;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <thead style="background: #f8f9fa; position: sticky; top: 0;">
+                            <tr>
+            `;
+            
+            displayColumns.forEach(col => {
+                tableHTML += `<th style="padding: 12px 8px; text-align: left; border-bottom: 2px solid #e8e8e8; width: ${col.width}; font-weight: bold;">${col.label}</th>`;
+            });
+            
+            tableHTML += '</tr></thead><tbody>';
+            
+            currentPageData.forEach((row, index) => {
+                const bgColor = index % 2 === 0 ? '#ffffff' : '#f9f9f9';
+                tableHTML += `<tr style="background: ${bgColor};">`;
+                
+                displayColumns.forEach(col => {
+                    let value = row[col.key] || 'N/A';
+                    
+                    // Format specific columns
+                    if (col.key === 'automatic_operation_started_at' || col.key === 'automatic_operation_ended_at') {
+                        if (value && value !== 'N/A') {
+                            value = formatDateTime(value);
+                        }
+                    } else if (col.key === 'length') {
+                        if (value && value !== 'N/A') {
+                            value = parseFloat(value).toLocaleString();
+                        }
+                    } else if (col.key === 'type') {
+                        value = formatMismatchType(value);
+                    }
+                    
+                    tableHTML += `<td style="padding: 8px; border-bottom: 1px solid #e8e8e8; vertical-align: top;">${value}</td>`;
+                });
+                
+                tableHTML += '</tr>';
+            });
+            
+            tableHTML += '</tbody></table></div>';
+            
+            // Add page navigation at bottom
+            if (totalPages > 1) {
+                tableHTML += `
+                    <div style="margin-top: 15px; text-align: center;">
+                        <div style="display: inline-flex; gap: 5px; align-items: center;">
+                            <button onclick="changePage(1)" ${currentPage <= 1 ? 'disabled' : ''} 
+                                    style="padding: 8px 12px; border: 1px solid #d9d9d9; background: ${currentPage <= 1 ? '#f5f5f5' : '#fff'}; cursor: ${currentPage <= 1 ? 'not-allowed' : 'pointer'};">First</button>
+                            <button onclick="changePage(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''} 
+                                    style="padding: 8px 12px; border: 1px solid #d9d9d9; background: ${currentPage <= 1 ? '#f5f5f5' : '#fff'}; cursor: ${currentPage <= 1 ? 'not-allowed' : 'pointer'};">« Prev</button>
+                `;
+                
+                // Show page numbers (show 5 pages around current page)
+                const startPage = Math.max(1, currentPage - 2);
+                const endPage = Math.min(totalPages, currentPage + 2);
+                
+                for (let i = startPage; i <= endPage; i++) {
+                    tableHTML += `
+                        <button onclick="changePage(${i})" 
+                                style="padding: 8px 12px; border: 1px solid #d9d9d9; background: ${i === currentPage ? '#1890ff' : '#fff'}; color: ${i === currentPage ? 'white' : 'black'}; cursor: pointer; font-weight: ${i === currentPage ? 'bold' : 'normal'};"
+                        >${i}</button>
+                    `;
+                }
+                
+                tableHTML += `
+                            <button onclick="changePage(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}
+                                    style="padding: 8px 12px; border: 1px solid #d9d9d9; background: ${currentPage >= totalPages ? '#f5f5f5' : '#fff'}; cursor: ${currentPage >= totalPages ? 'not-allowed' : 'pointer'};">Next »</button>
+                            <button onclick="changePage(${totalPages})" ${currentPage >= totalPages ? 'disabled' : ''}
+                                    style="padding: 8px 12px; border: 1px solid #d9d9d9; background: ${currentPage >= totalPages ? '#f5f5f5' : '#fff'}; cursor: ${currentPage >= totalPages ? 'not-allowed' : 'pointer'};">Last</button>
+                        </div>
+                        <div style="margin-top: 10px; color: #666; font-size: 12px;">
+                            Showing ${startIndex + 1}-${endIndex} of ${totalRows} records (${rowsPerPage} per page)
+                        </div>
+                    </div>
+                `;
+            }
+            
+            document.getElementById('list-content').innerHTML = tableHTML;
+        }
+        
+        function changePage(pageNum) {
+            const totalPages = Math.ceil(allListData.length / rowsPerPage);
+            
+            if (pageNum >= 1 && pageNum <= totalPages) {
+                currentPage = pageNum;
+                renderCurrentPage();
+                
+                // Scroll to top of list
+                document.getElementById('list-content').scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+
+        function formatDateTime(dateStr) {
+            if (!dateStr || dateStr === 'N/A') return 'N/A';
+            try {
+                // Parse timestamp string manually to avoid any timezone conversion
+                // Expected format: "2025-01-21T12:41:55" or "2025-01-21 12:41:55"
+                let cleanStr = dateStr.replace('T', ' ').replace('Z', '');
+                
+                // If already in YYYY-MM-DD HH:MM:SS format, return as-is
+                if (cleanStr.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)) {
+                    return cleanStr;
+                }
+                
+                // Try to extract date/time components manually
+                const match = cleanStr.match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+                if (match) {
+                    const [, year, month, day, hours, minutes, seconds] = match;
+                    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+                }
+                
+                // Fallback - try basic parsing but use string manipulation to avoid timezone issues
+                if (dateStr.includes('-') && dateStr.includes(':')) {
+                    return dateStr.replace('T', ' ').replace('Z', '').substring(0, 19);
+                }
+                
+                return dateStr;
+            } catch {
+                return dateStr;
+            }
+        }
+
+        function formatMismatchType(type) {
+            if (!type || type === 'N/A') return 'N/A';
+
+            const typeMapping = {
+                'is_in_null_basla_false': '🚜 Texnika ID tapılmadı',
+                'no_spatial_match_true': '📍 Poliqonla kəsişmə tapılmadı'
+            };
+
+            return typeMapping[type] || type;
+        }
+
+
+        // loadUnmatchedOperations function removed - endpoint doesn't exist
+        // Data is now loaded directly from GeoServer layers
+
+        function addOperationToMap(operation) {
+            try {
+                let lat, lng;
+                
+                // Try to extract coordinates from geometry if available
+                if (operation.geometry && operation.geometry.includes('POINT')) {
+                    // Parse POINT geometry: "POINT(lng lat)"
+                    const coordMatch = operation.geometry.match(/POINT\(([^\)]+)\)/);
+                    if (coordMatch) {
+                        const coords = coordMatch[1].split(' ');
+                        lng = parseFloat(coords[0]);
+                        lat = parseFloat(coords[1]);
+                    }
+                } else if (operation.geometry && operation.geometry.includes('LINESTRING')) {
+                    // Parse LINESTRING geometry and get first point
+                    const coordMatch = operation.geometry.match(/LINESTRING\(([^\)]+)\)/);
+                    if (coordMatch) {
+                        const coords = coordMatch[1].split(',')[0].trim().split(' ');
+                        lng = parseFloat(coords[0]);
+                        lat = parseFloat(coords[1]);
+                    }
+                }
+                
+                // Fallback to Azerbaijan center area if no valid coordinates
+                if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
+                    lat = 40.4093 + (Math.random() - 0.5) * 2;
+                    lng = 49.8671 + (Math.random() - 0.5) * 2;
+                }
+
+                const marker = L.circleMarker([lat, lng], {
+                    color: '#ff4d4f',
+                    fillColor: '#ff4d4f',
+                    weight: 2,
+                    opacity: 0.8,
+                    fillOpacity: 0.6,
+                    radius: Math.max(6, Math.min(operation.automatic_area / 5, 15))
+                });
+
+                const startDate = operation.started_at ? new Date(operation.started_at).toLocaleDateString() : 'N/A';
+                const duration = operation.duration_minutes ? Math.round(operation.duration_minutes) : 'N/A';
+
+                const popupContent = `
+                    <div style="min-width: 200px;">
+                        <h4 style="color: #237804; margin: 0 0 10px 0;">🚜 Operation #${operation.id}</h4>
+                        <p><strong>📅 Date:</strong> ${startDate}</p>
+                        <p><strong>🤖 Machinery:</strong> ${operation.wialon_machinery_id}</p>
+                        <p><strong>📏 Area:</strong> ${operation.automatic_area} ha</p>
+                        <p><strong>⏱️ Duration:</strong> ${duration} min</p>
+                        <p><strong>🗺️ Geozone:</strong> ${operation.geozona_id}</p>
+                        <p><strong>⚠️ Status:</strong> <span style="color: #ff4d4f;">Not in AgroHesab</span></p>
+                    </div>
+                `;
+
+                marker.bindPopup(popupContent);
+                marker.addTo(map);
+                markers.push(marker);
+                
+            } catch (error) {
+                console.error('Error adding operation to map:', error);
+            }
+        }
+
+
+
+        // Branch filter functionality
+        async function loadBranches() {
+            try {
+                const response = await fetch(`${API_BASE}/branches/`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                const branchSelect = document.getElementById('branch-filter');
+                
+                // Clear existing options (except "All Branches")
+                branchSelect.innerHTML = '<option value="">All Branches</option>';
+                
+                // Add branch options
+                data.branches.forEach(branch => {
+                    const option = document.createElement('option');
+                    option.value = branch.district_id;
+                    option.textContent = branch.district_name;
+                    branchSelect.appendChild(option);
+                });
+                
+                console.log(`Loaded ${data.branches.length} branches`);
+                
+            } catch (error) {
+                console.error('Error loading branches:', error);
+            }
+        }
+
+        // Function removed - now using single Apply button
+
+        async function zoomToFilteredMissions() {
+            try {
+                // Get all filter values
+                const branchSelect = document.getElementById('branch-filter');
+                const selectedBranchId = branchSelect.value;
+                const lengthOperator = document.getElementById('length-operator');
+                const lengthFilter = document.getElementById('length-filter');
+                const typeFilter = document.getElementById('type-filter');
+                const machineryFilter = document.getElementById('machinery-filter');
+                const geozonaFilter = document.getElementById('geozona-filter');
+                const missionFilter = document.getElementById('mission-filter');
+                
+                // Build CQL filter same as the map layer
+                let cqlFilters = [];
+                
+                // Add branch filter
+                if (selectedBranchId) {
+                    cqlFilters.push(`branch_id = ${selectedBranchId}`);
+                }
+                
+                
+                // Add length filter
+                if (lengthFilter && lengthFilter.value && parseFloat(lengthFilter.value) > 0) {
+                    const operator = lengthOperator ? lengthOperator.value : '>';
+                    const lengthMeters = parseFloat(lengthFilter.value) * 1000;
+                    cqlFilters.push(`length ${operator} ${lengthMeters}`);
+                }
+                
+                // Add type filter with new column logic
+                if (typeFilter && typeFilter.value) {
+                    if (typeFilter.value === 'is_in_null_basla_false') {
+                        cqlFilters.push('is_in_null_basla = false');
+                    } else if (typeFilter.value === 'no_spatial_match_true') {
+                        cqlFilters.push('no_spatial_match = true');
+                    }
+                }
+                
+                // Add machinery filter
+                if (machineryFilter && machineryFilter.value && parseInt(machineryFilter.value) > 0) {
+                    cqlFilters.push(`wialon_machinery_id = ${machineryFilter.value}`);
+                }
+                
+                // Add geozona filter
+                if (geozonaFilter && geozonaFilter.value && parseInt(geozonaFilter.value) > 0) {
+                    cqlFilters.push(`geozona_id = ${geozonaFilter.value}`);
+                }
+                
+                // Add mission filter
+                if (missionFilter && missionFilter.value && parseInt(missionFilter.value) > 0) {
+                    cqlFilters.push(`id = ${missionFilter.value}`);
+                }
+                
+                // If no filters applied, don't zoom
+                if (cqlFilters.length === 0) return;
+                
+                const cqlFilter = cqlFilters.join(' AND ');
+                
+                // Use GeoServer WFS to get features and calculate bounds with memory limits
+                const geoserverUrl = 'https://agrogeo.agrone.az/geoserver/Field-Service/wfs';
+                const params = new URLSearchParams({
+                    service: 'WFS',
+                    version: '1.1.0',
+                    request: 'GetFeature',
+                    typename: 'Field-Service:mismatch_cases',
+                    outputFormat: 'application/json',
+                    srsname: 'EPSG:4326',
+                    CQL_FILTER: cqlFilter,
+                    maxFeatures: '500'  // Reduced from 1000 to prevent memory issues
+                });
+                
+                console.log(`Fetching filtered missions extent with filter: ${cqlFilter}`);
+                
+                const response = await fetch(`${geoserverUrl}?${params}`);
+                
+                if (!response.ok) {
+                    console.error('Failed to fetch filtered missions extent:', response.status);
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                if (data.features && data.features.length > 0) {
+                    // Calculate bounds from all features
+                    let minLat = Infinity, maxLat = -Infinity;
+                    let minLng = Infinity, maxLng = -Infinity;
+                    
+                    data.features.forEach(feature => {
+                        if (feature.geometry && feature.geometry.coordinates) {
+                            // Handle LineString geometry
+                            if (feature.geometry.type === 'LineString') {
+                                feature.geometry.coordinates.forEach(coord => {
+                                    const [lng, lat] = coord;
+                                    minLat = Math.min(minLat, lat);
+                                    maxLat = Math.max(maxLat, lat);
+                                    minLng = Math.min(minLng, lng);
+                                    maxLng = Math.max(maxLng, lng);
+                                });
+                            }
+                        }
+                    });
+                    
+                    // Zoom to bounds with some padding
+                    if (minLat !== Infinity && maxLat !== -Infinity) {
+                        const bounds = L.latLngBounds([
+                            [minLat, minLng],
+                            [maxLat, maxLng]
+                        ]);
+                        
+                        map.fitBounds(bounds, { padding: [20, 20] });
+                        console.log(`Zoomed to filtered missions (${data.features.length} features)`);
+                    }
+                } else {
+                    console.log('No missions found with current filters');
+                }
+                
+            } catch (error) {
+                console.error('Error zooming to filtered missions:', error);
+            }
+        }
+
+        // Functions removed - now using single Apply button
+
+        function applyMapFilters() {
+            const branchSelect = document.getElementById('branch-filter');
+            const selectedBranchId = branchSelect.value;
+            const lengthOperator = document.getElementById('length-operator');
+            const lengthFilter = document.getElementById('length-filter');
+            const lengthValue = lengthFilter.value;
+            const typeFilter = document.getElementById('type-filter');
+            const typeValue = typeFilter.value;
+            
+            // Get new filter values
+            const machineryFilter = document.getElementById('machinery-filter');
+            const geozonaFilter = document.getElementById('geozona-filter');
+            const missionFilter = document.getElementById('mission-filter');
+            
+            const machineryValue = machineryFilter ? machineryFilter.value : null;
+            const geozonaValue = geozonaFilter ? geozonaFilter.value : null;
+            const missionValue = missionFilter ? missionFilter.value : null;
+            
+            if (unfoundMissionsLayer) {
+                // Check if the layer is currently visible/added to map before removing
+                const layerWasVisible = map.hasLayer(unfoundMissionsLayer);
+                
+                // Remove current layer
+                map.removeLayer(unfoundMissionsLayer);
+                
+                // Build CQL filter
+                let cqlFilters = [];
+                
+                // Add branch filter
+                if (selectedBranchId) {
+                    cqlFilters.push(`branch_id = ${selectedBranchId}`);
+                }
+                
+                // Add length filter with operator
+                if (lengthValue && parseFloat(lengthValue) > 0) {
+                    const operator = lengthOperator.value;
+                    const lengthMeters = parseFloat(lengthValue) * 1000; // Convert km to meters
+                    cqlFilters.push(`length ${operator} ${lengthMeters}`);
+                }
+                
+                // Add type filter with new column logic
+                if (typeValue) {
+                    if (typeValue === 'is_in_null_basla_false') {
+                        cqlFilters.push('is_in_null_basla = false');
+                    } else if (typeValue === 'no_spatial_match_true') {
+                        cqlFilters.push('no_spatial_match = true');
+                    }
+                }
+                
+                // Add new filters
+                if (machineryValue && parseInt(machineryValue) > 0) {
+                    cqlFilters.push(`wialon_machinery_id = ${machineryValue}`);
+                }
+                
+                if (geozonaValue && parseInt(geozonaValue) > 0) {
+                    cqlFilters.push(`geozona_id = ${geozonaValue}`);
+                }
+                
+                if (missionValue && parseInt(missionValue) > 0) {
+                    cqlFilters.push(`id = ${missionValue}`);
+                }
+                
+                // Combine filters
+                const cqlFilter = cqlFilters.length > 0 ? cqlFilters.join(' AND ') : null;
+                
+                console.log('DEBUG: Generated CQL Filter:', cqlFilter);
+                console.log('DEBUG: Individual filters:', cqlFilters);
+                
+                // Create new layer with filters
+                const geoserverUrl = 'https://agrogeo.agrone.az/geoserver/Field-Service/wms';
+                const layerOptions = {
+                    layers: 'Field-Service:mismatch_cases',
+                    format: 'image/png',
+                    transparent: true,
+                    version: '1.1.0',
+                    attribution: 'Mismatch Cases Data',
+                    crossOrigin: true,
+                    zIndex: 2,  // Ensure mismatch cases layer stays on top
+                    maxZoom: 18,  // Limit max zoom to prevent excessive detail loading
+                    tileSize: 256  // Standard tile size for better performance
+                };
+                
+                if (cqlFilter) {
+                    layerOptions.cql_filter = cqlFilter;
+                    console.log('DEBUG: Applied CQL filter to layer:', cqlFilter);
+                } else {
+                    // Always apply a default filter to prevent loading too much data
+                    layerOptions.cql_filter = 'length > 1000';
+                    console.log('DEBUG: Applied default length filter to prevent memory issues');
+                }
+                
+                unfoundMissionsLayer = L.tileLayer.wms(geoserverUrl, layerOptions);
+                
+                // Only add filtered layer back to map if it was previously visible
+                if (layerWasVisible) {
+                    unfoundMissionsLayer.addTo(map);
+                    
+                    // Ensure unfound missions layer stays on top of geozonas
+                    if (unfoundMissionsLayer && unfoundMissionsLayer.bringToFront) {
+                        unfoundMissionsLayer.bringToFront();
+                    }
+                }
+                
+                // Update mission count with current filters
+                setTimeout(() => {
+                    loadMissionCount();
+                }, 500); // Small delay to ensure layer is updated first
+                
+                // Zoom to filtered missions if any filters are applied
+                if (cqlFilter) {
+                    setTimeout(() => {
+                        zoomToFilteredMissions();
+                    }, 1000); // Wait for layer to load
+                }
+                
+                console.log(`Applied map filters - Branch: ${selectedBranchId}, Length: ${lengthOperator.value} ${lengthValue} km, Machinery: ${machineryValue}, Geozona: ${geozonaValue}, Mission: ${missionValue}`);
+            }
+        }
+
+        // Mission count functionality
+        async function loadMissionCount() {
+            try {
+                let url = `${API_BASE}/branches/mission-count`;
+                const urlParams = [];
+                
+                // Get current branch filter value
+                const branchSelect = document.getElementById('branch-filter');
+                const selectedBranchId = branchSelect ? branchSelect.value : null;
+                
+                if (selectedBranchId) {
+                    urlParams.push(`branch_id=${selectedBranchId}`);
+                }
+                
+                // Get current length filter values
+                const lengthFilter = document.getElementById('length-filter');
+                const lengthOperator = document.getElementById('length-operator');
+                
+                // Get current type filter value
+                const typeFilter = document.getElementById('type-filter');
+                const typeValue = typeFilter ? typeFilter.value : null;
+                
+                // Get new filter values
+                const machineryFilter = document.getElementById('machinery-filter');
+                const geozonaFilter = document.getElementById('geozona-filter');
+                const missionFilter = document.getElementById('mission-filter');
+                
+                const machineryValue = machineryFilter ? machineryFilter.value : null;
+                const geozonaValue = geozonaFilter ? geozonaFilter.value : null;
+                const missionValue = missionFilter ? missionFilter.value : null;
+                
+                console.log('DEBUG loadMissionCount:', {
+                    lengthValue: lengthFilter ? lengthFilter.value : 'null',
+                    lengthOperator: lengthOperator ? lengthOperator.value : 'null',
+                    selectedBranchId: selectedBranchId,
+                    typeValue: typeValue,
+                    machineryValue: machineryValue,
+                    geozonaValue: geozonaValue,
+                    missionValue: missionValue
+                });
+                
+                
+                if (lengthFilter && lengthFilter.value && parseFloat(lengthFilter.value) > 0) {
+                    const operator = lengthOperator ? lengthOperator.value : '>';
+                    console.log('DEBUG: Adding length filter:', operator, lengthFilter.value);
+                    if (operator === '>') {
+                        urlParams.push(`length_greater_than=${lengthFilter.value}`);
+                    } else if (operator === '<') {
+                        urlParams.push(`length_less_than=${lengthFilter.value}`);
+                    }
+                }
+                
+                // Add type filter
+                if (typeValue) {
+                    urlParams.push(`type=${encodeURIComponent(typeValue)}`);
+                }
+                
+                // Add new filters
+                if (machineryValue && parseInt(machineryValue) > 0) {
+                    urlParams.push(`wialon_machinery_id=${machineryValue}`);
+                }
+                
+                if (geozonaValue && parseInt(geozonaValue) > 0) {
+                    urlParams.push(`geozona_id=${geozonaValue}`);
+                }
+                
+                if (missionValue && parseInt(missionValue) > 0) {
+                    urlParams.push(`mission_id=${missionValue}`);
+                }
+                
+                if (urlParams.length > 0) {
+                    url += '?' + urlParams.join('&');
+                }
+                
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                const countElement = document.getElementById('mission-count');
+                
+                if (countElement) {
+                    countElement.textContent = data.mission_count.toLocaleString();
+                } else {
+                    console.error('mission-count element not found');
+                }
+                
+                // Update summary box style based on filter status
+                const summaryBox = document.getElementById('mission-summary');
+                if (summaryBox) {
+                    if (data.filtered) {
+                        summaryBox.style.background = '#fff2e8';
+                        summaryBox.style.borderColor = '#fa8c16';
+                        summaryBox.style.color = '#fa8c16';
+                    } else {
+                        summaryBox.style.background = '#f0f9ff';
+                        summaryBox.style.borderColor = '#1890ff';
+                        summaryBox.style.color = '#1890ff';
+                    }
+                } else {
+                    console.error('mission-summary element not found');
+                }
+                
+                console.log(`Mission count loaded: ${data.mission_count} (filtered: ${data.filtered})`);
+                
+            } catch (error) {
+                console.error('Error loading mission count:', error);
+                const countElement = document.getElementById('mission-count');
+                if (countElement) {
+                    countElement.textContent = 'Error';
+                }
+            }
+        }
+
+        // CSV Export functionality
+        async function exportToCSV() {
+            try {
+                // Get current filter values
+                const branchSelectEl = document.getElementById('branch-filter');
+                const selectedBranchId = branchSelectEl.value;
+                const lengthFilter = document.getElementById('length-filter');
+                const lengthOperator = document.getElementById('length-operator');
+                const lengthValue = lengthFilter.value;
+                const typeFilter = document.getElementById('type-filter');
+                const typeValue = typeFilter.value;
+                
+                // Get new filter values
+                const machineryFilter = document.getElementById('machinery-filter');
+                const geozonaFilter = document.getElementById('geozona-filter');
+                const missionFilter = document.getElementById('mission-filter');
+                
+                const machineryValue = machineryFilter ? machineryFilter.value : null;
+                const geozonaValue = geozonaFilter ? geozonaFilter.value : null;
+                const missionValue = missionFilter ? missionFilter.value : null;
+                
+                // Build export URL with current filters
+                let exportUrl = `${API_BASE}/metrics/export-csv`;
+                const urlParams = [];
+                
+                if (selectedBranchId) {
+                    urlParams.push(`branch_id=${selectedBranchId}`);
+                }
+                if (lengthValue && parseFloat(lengthValue) > 0) {
+                    const operator = lengthOperator.value;
+                    if (operator === '>') {
+                        urlParams.push(`length_greater_than=${lengthValue}`);
+                    } else if (operator === '<') {
+                        urlParams.push(`length_less_than=${lengthValue}`);
+                    }
+                }
+                if (typeValue) {
+                    urlParams.push(`type=${encodeURIComponent(typeValue)}`);
+                }
+                
+                // Add new filters
+                if (machineryValue && parseInt(machineryValue) > 0) {
+                    urlParams.push(`wialon_machinery_id=${machineryValue}`);
+                }
+                
+                if (geozonaValue && parseInt(geozonaValue) > 0) {
+                    urlParams.push(`geozona_id=${geozonaValue}`);
+                }
+                
+                if (missionValue && parseInt(missionValue) > 0) {
+                    urlParams.push(`mission_id=${missionValue}`);
+                }
+                
+                if (urlParams.length > 0) {
+                    exportUrl += '?' + urlParams.join('&');
+                }
+                
+                console.log('Exporting CSV with URL:', exportUrl);
+                
+                // Show loading state
+                const exportBtn = document.querySelector('button[onclick="exportToCSV()"]');
+                const originalText = exportBtn.innerHTML;
+                exportBtn.innerHTML = '<span class="icon">⏳</span> Exporting...';
+                exportBtn.disabled = true;
+                
+                // Download CSV file with timeout for K8s
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+                
+                const response = await fetch(exportUrl, {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    throw new Error(`Export failed: ${response.status} - ${response.statusText}`);
+                }
+                
+                // Get the filename from response headers
+                const contentDisposition = response.headers.get('Content-Disposition');
+                
+                // Generate filename based on current frontend state (same logic as backend)
+                let filename = 'mismatch_cases';
+                
+                if (selectedBranchId) {
+                    // Get selected branch name
+                    const selectedOption = branchSelectEl.options[branchSelectEl.selectedIndex];
+                    const branchName = selectedOption.textContent;
+                    
+                    if (branchName && branchName !== 'All Branches') {
+                        // Replace special characters with similar ASCII characters
+                        let cleanBranchName = branchName
+                            .replace(/Ə/g, 'E')  // Azerbaijani schwa
+                            .replace(/ə/g, 'e')  
+                            .replace(/Ğ/g, 'G')  // Turkish/Azerbaijani soft G
+                            .replace(/ğ/g, 'g')
+                            .replace(/İ/g, 'I')  // Turkish/Azerbaijani dotted I
+                            .replace(/ı/g, 'i')  // Turkish/Azerbaijani dotless i
+                            .replace(/Ö/g, 'O')  // O with umlaut
+                            .replace(/ö/g, 'o')
+                            .replace(/Ü/g, 'U')  // U with umlaut  
+                            .replace(/ü/g, 'u')
+                            .replace(/Ç/g, 'C')  // C with cedilla
+                            .replace(/ç/g, 'c')
+                            .replace(/Ş/g, 'S')  // S with cedilla
+                            .replace(/ş/g, 's')
+                            .replace(/[^a-zA-Z0-9\s\-_]/g, '') // Remove any remaining special chars
+                            .trim()
+                            .replace(/\s+/g, '_'); // Replace spaces with underscores
+                        
+                        if (cleanBranchName) {
+                            filename += '_' + cleanBranchName;
+                        } else {
+                            // Last resort fallback
+                            filename += '_branch_' + selectedBranchId;
+                        }
+                    }
+                }
+                
+                // Add length filter to filename
+                if (lengthValue && parseFloat(lengthValue) > 0) {
+                    filename += `_length_${lengthOperator.value}_${lengthValue}km`;
+                }
+                filename += '.csv';
+                
+                console.log('Generated frontend filename:', filename);
+                console.log('Content-Disposition header:', contentDisposition);
+                
+                // Try to parse backend filename as backup
+                if (contentDisposition) {
+                    const filenameMatch = contentDisposition.match(/filename="([^"]+)"/);
+                    if (filenameMatch && filenameMatch[1]) {
+                        const backendFilename = filenameMatch[1];
+                        console.log('Backend suggested filename:', backendFilename);
+                        // Use backend filename if it looks valid
+                        if (backendFilename.includes('mismatch_cases')) {
+                            filename = backendFilename;
+                        }
+                    }
+                }
+                
+                // Create blob and download
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                
+                console.log(`CSV exported successfully: ${filename}`);
+                
+                // Reset button
+                exportBtn.innerHTML = originalText;
+                exportBtn.disabled = false;
+                
+            } catch (error) {
+                console.error('Error exporting CSV:', error);
+                
+                // Reset button and show error
+                const exportBtn = document.querySelector('button[onclick="exportToCSV()"]');
+                exportBtn.innerHTML = '<span class="icon">📊</span> Export CSV';
+                exportBtn.disabled = false;
+                
+                // Show error message to user
+                alert(`Export failed: ${error.message}`);
+            }
+        }
+
+        // Map click handler for mission details
+        async function onMapClick(e) {
+            const lat = e.latlng.lat;
+            const lng = e.latlng.lng;
+            
+            console.log('Map clicked at:', lat, lng);
+            
+            // Check if mismatch cases layer is visible
+            if (!map.hasLayer(unfoundMissionsLayer)) {
+                console.log('Mismatch cases layer not visible, skipping query');
+                return;
+            }
+            
+            console.log('Mismatch cases layer is visible, querying...');
+            
+            // Query GeoServer WFS for features at click location
+            await queryMissionDetails(lat, lng, e.latlng);
+        }
+
+        async function queryMissionDetails(lat, lng, latlng) {
+            try {
+                console.log(`Querying mission details at: ${lat}, ${lng}`);
+                
+                const branchSelect = document.getElementById('branch-filter');
+                const selectedBranchId = branchSelect.value;
+                const lengthFilter = document.getElementById('length-filter');
+                const lengthOperator = document.getElementById('length-operator');
+                const lengthValue = lengthFilter.value;
+                const typeFilter = document.getElementById('type-filter');
+                const typeValue = typeFilter.value;
+                
+                // Get new filter values
+                const machineryFilter = document.getElementById('machinery-filter');
+                const geozonaFilter = document.getElementById('geozona-filter');
+                const missionFilter = document.getElementById('mission-filter');
+                
+                const machineryValue = machineryFilter ? machineryFilter.value : null;
+                const geozonaValue = geozonaFilter ? geozonaFilter.value : null;
+                const missionValue = missionFilter ? missionFilter.value : null;
+                
+                // Use backend proxy with lat/lng and all filters
+                let url = `${API_BASE}/branches/wfs-query?lat=${lat}&lng=${lng}`;
+                if (selectedBranchId) {
+                    url += `&branch_id=${selectedBranchId}`;
+                }
+                if (lengthValue && parseFloat(lengthValue) > 0) {
+                    const operator = lengthOperator.value;
+                    if (operator === '>') {
+                        url += `&length_greater_than=${lengthValue}`;
+                    } else if (operator === '<') {
+                        url += `&length_less_than=${lengthValue}`;
+                    }
+                }
+                if (typeValue) {
+                    url += `&type=${encodeURIComponent(typeValue)}`;
+                }
+                
+                // Add new filters
+                if (machineryValue && parseInt(machineryValue) > 0) {
+                    url += `&wialon_machinery_id=${machineryValue}`;
+                }
+                
+                if (geozonaValue && parseInt(geozonaValue) > 0) {
+                    url += `&geozona_id=${geozonaValue}`;
+                }
+                
+                if (missionValue && parseInt(missionValue) > 0) {
+                    url += `&mission_id=${missionValue}`;
+                }
+
+                console.log('Backend WFS proxy URL:', url);
+
+                const response = await fetch(url);
+                
+                console.log('Backend Response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Backend Error response:', errorText);
+                    throw new Error(`Backend request failed: ${response.status} - ${errorText}`);
+                }
+                
+                const data = await response.json();
+                console.log('Backend Response data:', data);
+                
+                if (data.features && data.features.length > 0) {
+                    // Find the closest feature to click point
+                    let closestFeature = data.features[0];
+                    let minDistance = calculateDistance(lat, lng, closestFeature);
+                    
+                    for (let feature of data.features) {
+                        const distance = calculateDistance(lat, lng, feature);
+                        if (distance < minDistance) {
+                            minDistance = distance;
+                            closestFeature = feature;
+                        }
+                    }
+                    
+                    // Show mission details popup
+                    showMissionPopup(closestFeature, latlng);
+                } else {
+                    console.log('No missions found at click location');
+                }
+                
+            } catch (error) {
+                console.error('Error querying mission details:', error);
+            }
+        }
+
+        function calculateDistance(lat, lng, feature) {
+            // Calculate distance from click point to feature geometry
+            if (!feature.geometry || !feature.geometry.coordinates) {
+                return Infinity;
+            }
+            
+            let minDistance = Infinity;
+            
+            if (feature.geometry.type === 'LineString') {
+                // For LineString, find the closest point on the line
+                const coords = feature.geometry.coordinates;
+                for (let i = 0; i < coords.length; i++) {
+                    const [fLng, fLat] = coords[i];
+                    const distance = Math.sqrt(
+                        Math.pow(lat - fLat, 2) + Math.pow(lng - fLng, 2)
+                    );
+                    minDistance = Math.min(minDistance, distance);
+                }
+            } else if (feature.geometry.type === 'MultiLineString') {
+                // For MultiLineString, check all line segments
+                const lineStrings = feature.geometry.coordinates;
+                for (let line of lineStrings) {
+                    for (let i = 0; i < line.length; i++) {
+                        const [fLng, fLat] = line[i];
+                        const distance = Math.sqrt(
+                            Math.pow(lat - fLat, 2) + Math.pow(lng - fLng, 2)
+                        );
+                        minDistance = Math.min(minDistance, distance);
+                    }
+                }
+            } else if (feature.geometry.type === 'Point') {
+                // For Point geometry
+                const [fLng, fLat] = feature.geometry.coordinates;
+                minDistance = Math.sqrt(
+                    Math.pow(lat - fLat, 2) + Math.pow(lng - fLng, 2)
+                );
+            }
+            
+            return minDistance;
+        }
+
+        function showMissionPopup(feature, latlng) {
+            const props = feature.properties;
+            
+            // Format date values
+            const formatDate = (dateStr) => {
+                if (!dateStr) return 'N/A';
+                try {
+                    // Parse timestamp string manually to avoid any timezone conversion
+                    // Expected format: "2025-01-21T12:41:55" or "2025-01-21 12:41:55"
+                    let cleanStr = dateStr.replace('T', ' ').replace('Z', '');
+                    
+                    // If already in YYYY-MM-DD HH:MM:SS format, return as-is
+                    if (cleanStr.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)) {
+                        return cleanStr;
+                    }
+                    
+                    // Try to extract date/time components manually
+                    const match = cleanStr.match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+                    if (match) {
+                        const [, year, month, day, hours, minutes, seconds] = match;
+                        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+                    }
+                    
+                    // Fallback - try basic parsing but use string manipulation to avoid timezone issues
+                    if (dateStr.includes('-') && dateStr.includes(':')) {
+                        return dateStr.replace('T', ' ').replace('Z', '').substring(0, 19);
+                    }
+                    
+                    return dateStr;
+                } catch {
+                    return dateStr;
+                }
+            };
+
+            // Format numeric values (without commas for IDs)
+            const formatNumber = (value) => {
+                if (value === null || value === undefined) return 'N/A';
+                return value.toString();
+            };
+            
+            // Format area/length with commas
+            const formatMeasurement = (value) => {
+                if (value === null || value === undefined) return 'N/A';
+                if (typeof value === 'number') {
+                    return value.toLocaleString();
+                }
+                return value;
+            };
+
+            // Create detailed popup content with all available columns
+            const popupContent = `
+                <div style="max-width: 300px; font-size: 13px; line-height: 1.4;">
+                    <h4 style="color: #ff4d4f; margin: 0 0 10px 0; font-size: 14px;">
+                        🚜 Mission #${formatNumber(props.id)}
+                    </h4>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                        <div><strong>Contract ID:</strong><br>${formatNumber(props.contract_id)}</div>
+                        <div><strong>🏢 Branch:</strong><br>${props.branch_name || 'Unknown'}</div>
+                    </div>
+
+                    <div style="margin-bottom: 8px;">
+                        <div><strong>🚜 Machinery:</strong><br>${props.machinery_name || 'Unknown'} (ID: ${formatNumber(props.wialon_machinery_id)})</div>
+                    </div>
+
+                    <div style="margin-bottom: 8px;">
+                        <div><strong>📍 Geozone ID:</strong><br>${formatNumber(props.geozona_id)}</div>
+                    </div>
+
+                    <div style="margin-bottom: 8px;">
+                        <strong>📅 Started:</strong><br>
+                        ${formatDate(props.automatic_operation_started_at)}
+                    </div>
+
+                    <div style="margin-bottom: 8px;">
+                        <strong>🏁 Ended:</strong><br>
+                        ${formatDate(props.automatic_operation_ended_at)}
+                    </div>
+
+                    <div style="margin-bottom: 8px;">
+                        <div><strong>📐 Length:</strong><br>${formatMeasurement(props.length / 1000)} km</div>
+                    </div>
+
+                    <div style="margin-bottom: 8px;">
+                        <div><strong>📊 Coverage Ratio:</strong><br>${props.geozona_coverage_ratio ? (props.geozona_coverage_ratio * 100).toFixed(1) + '%' : 'N/A'}</div>
+                    </div>
+                </div>
+            `;
+
+            // Create popup
+            const popup = L.popup({
+                maxWidth: 320,
+                className: 'mission-details-popup'
+            })
+            .setLatLng(latlng)
+            .setContent(popupContent)
+            .openOn(map);
+        }
+
+        // Clear all filters function
+        function clearAllFilters() {
+            // Reset all filter inputs to their default values
+            document.getElementById('branch-filter').value = '';
+            document.getElementById('length-operator').value = '>';
+            document.getElementById('length-filter').value = '1';
+            document.getElementById('type-filter').value = '';
+            document.getElementById('machinery-filter').value = '';
+            document.getElementById('geozona-filter').value = '';
+            document.getElementById('mission-filter').value = '';
+            
+            // Apply the cleared filters
+            applyMapFilters();
+            
+            // Update mission count
+            setTimeout(() => {
+                loadMissionCount();
+            }, 500);
+        }
+
+        // Branch Statistics functionality
+        async function loadBranchStatistics() {
+            try {
+                // Show loading state
+                document.getElementById('stats-loading').style.display = 'block';
+                document.getElementById('stats-content').style.opacity = '0.5';
+                
+                const response = await fetch(`${API_BASE}/branches/statistics`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Hide loading state
+                document.getElementById('stats-loading').style.display = 'none';
+                document.getElementById('stats-content').style.opacity = '1';
+                
+                // Process data for charts
+                createBranchCharts(data.statistics);
+                
+            } catch (error) {
+                console.error('Error loading branch statistics:', error);
+                document.getElementById('stats-loading').style.display = 'none';
+                document.getElementById('stats-content').innerHTML = `
+                    <div class="error">
+                        <strong>Error loading statistics:</strong> ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function createBranchCharts(statisticsData) {
+            // Process data for branch totals chart
+            const branchTotals = {};
+            const typesByBranch = {};
+            
+            statisticsData.forEach(stat => {
+                const branch = stat.branch_name;
+                const type = stat.mission_type;
+                const count = stat.mission_count;
+                
+                // Accumulate totals by branch
+                branchTotals[branch] = (branchTotals[branch] || 0) + count;
+                
+                // Organize by branch and type for clustered chart
+                if (!typesByBranch[branch]) {
+                    typesByBranch[branch] = {};
+                }
+                typesByBranch[branch][type] = count;
+            });
+
+            // Create branch totals chart
+            createBranchTotalsChart(branchTotals);
+            
+            // Create mission types by branch chart
+            createMissionTypesChart(typesByBranch);
+        }
+
+        function createBranchTotalsChart(branchTotals) {
+            const ctx = document.getElementById('branchChart').getContext('2d');
+            
+            // Destroy existing chart
+            if (branchChart) {
+                branchChart.destroy();
+            }
+            
+            const branches = Object.keys(branchTotals);
+            const counts = Object.values(branchTotals);
+            
+            branchChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: branches,
+                    datasets: [{
+                        label: 'Total Missions',
+                        data: counts,
+                        backgroundColor: '#52c41a',
+                        borderColor: '#237804',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        intersect: false
+                    },
+                    layout: {
+                        padding: 0
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: '📊 Total Mission Count by Branch'
+                        },
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                maxRotation: 45
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createMissionTypesChart(typesByBranch) {
+            const ctx = document.getElementById('typeChart').getContext('2d');
+            
+            // Destroy existing chart
+            if (typeChart) {
+                typeChart.destroy();
+            }
+            
+            // Get all unique mission types
+            const allTypes = new Set();
+            Object.values(typesByBranch).forEach(branchTypes => {
+                Object.keys(branchTypes).forEach(type => allTypes.add(type));
+            });
+            
+            const typeArray = Array.from(allTypes);
+            const branches = Object.keys(typesByBranch);
+            
+            // Colors for different mission types
+            const colors = [
+                '#ff4d4f', // Red
+                '#1890ff', // Blue
+                '#fa8c16', // Orange
+                '#722ed1', // Purple
+                '#52c41a'  // Green
+            ];
+            
+            const datasets = typeArray.map((type, index) => ({
+                label: formatMissionTypeLabel(type),
+                data: branches.map(branch => typesByBranch[branch][type] || 0),
+                backgroundColor: colors[index % colors.length],
+                borderColor: colors[index % colors.length],
+                borderWidth: 1
+            }));
+            
+            typeChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: branches,
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        intersect: false
+                    },
+                    layout: {
+                        padding: 0
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: '📈 Mission Types by Branch'
+                        },
+                        legend: {
+                            onClick: (e, legendItem, legend) => {
+                                const index = legendItem.datasetIndex;
+                                const chart = legend.chart;
+                                
+                                if (chart.isDatasetVisible(index)) {
+                                    chart.hide(index);
+                                    legendItem.hidden = true;
+                                } else {
+                                    chart.show(index);
+                                    legendItem.hidden = false;
+                                }
+                                chart.update();
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                maxRotation: 45
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function formatMissionTypeLabel(type) {
+            const typeMapping = {
+                'is_in_null_basla_false': 'Texnika ID tapılmadı',
+                'no_spatial_match_true': 'Poliqonla kəsişmə tapılmadı'
+            };
+            return typeMapping[type] || type;
+        }
+    </script>
+</body>
+</html>

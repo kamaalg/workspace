@@ -6,6 +6,7 @@ services:
     volumes:
       - ../:/workspace
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+      - /var/run/docker.sock:/var/run/docker.sock 
     command: /bin/sh -c "sleep infinity"
     user: root
     depends_on:
@@ -19,6 +20,13 @@ services:
 
     ports:
       - "8001:8000"
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8009:80"
+    depends_on: [dev]
 
   postgres:
     image: postgres:16-alpine
@@ -34,7 +42,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5433:5432"
+      - "5432"
 
   airflow:
     image: apache/airflow:2.9.3-python3.12   
@@ -44,10 +52,10 @@ services:
       AIRFLOW__WEBSERVER__SECRET_KEY: changeme
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
     volumes:
-      - ./dags:/opt/airflow/dags
-      - ./logs:/opt/airflow/logs
-      - ./plugins:/opt/airflow/plugins
-      - ./requirements.txt:/opt/airflow/requirements.txt
+    - airflow_dags:/opt/airflow/dags
+    - airflow_logs:/opt/airflow/logs
+    - airflow_plugins:/opt/airflow/plugins
+    - airflow_requirements:/opt/airflow/requirements.txt
     user: "${AIRFLOW_UID:-50000}:0"
     ports:
       - "8080:8080"
@@ -61,6 +69,11 @@ services:
 
 
 volumes:
+
+  airflow_dags:
+  airflow_logs:
+  airflow_plugins:
+  airflow_requirements:
   pgdata:
     external: true
     name: fastapi-pg-dev_devcontainer_pgdata
