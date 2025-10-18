@@ -48,22 +48,28 @@ services:
     image: apache/airflow:2.9.3-python3.12   
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://app:app@host.docker.internal:5433/app
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://app:app@postgres:5432/airflow
       AIRFLOW__WEBSERVER__SECRET_KEY: changeme
+      AIRFLOW_CONN_DATA_POSTGRES: postgresql+psycopg2://app:app@postgres:5432/app
+
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
     volumes:
-    - airflow_dags:/opt/airflow/dags
-    - airflow_logs:/opt/airflow/logs
+    - ../airflow/dags:/opt/airflow/dags
+    - airflow_logs:/opt/airflow/logs         
     - airflow_plugins:/opt/airflow/plugins
-    - airflow_requirements:/opt/airflow/requirements.txt
+    - ../airflow/requirements/airflow.txt:/opt/airflow/requirements.txt:ro
+    - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
     user: "${AIRFLOW_UID:-50000}:0"
     ports:
       - "8080:8080"
-    command: ["bash","-lc",
-      "airflow db migrate && \
-       airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true; \
-       exec airflow webserver --port 8080"
-    ]
+    command: >
+      bash -lc "
+        pip install -r /opt/airflow/requirements.txt || true;
+        airflow db init;                    
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true;
+        airflow webserver --port 8080 & 
+        exec airflow scheduler
+      "
 
 
 
