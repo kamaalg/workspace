@@ -1,12 +1,22 @@
 # gee_incremental_etl.py
-from datetime import datetime
+from datetime import datetime,timedelta
 from airflow.decorators import dag, task
-
-@dag(dag_id="hello_kamal", start_date=datetime(2025, 10, 1), schedule=None, catchup=False)
-def hello_kamal():
+from app.ee_physical import batch_process 
+@dag(
+    dag_id="ee_physical_pipeline",
+    start_date=datetime(2025, 10, 1),
+    schedule="0 * * * *",      
+    catchup=False,
+    max_active_runs=1,
+    default_args={"retries": 3, "retry_delay": timedelta(minutes=2), "owner": "data"},
+    tags=["gee", "app"],
+)
+def processPixels():
     @task
-    def hi():
-        print("it works!")
-    hi()
+    def task_run():
+        batch_process()
+        return {"status": "ok"}
 
-dag = hello_kamal()
+    task_run()
+
+dag = processPixels()

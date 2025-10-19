@@ -13,3 +13,4 @@ retry-requests
 numpy 
 pandas
 matplotlib
+psycopg[binary,pool]==3.1.19

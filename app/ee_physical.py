@@ -402,50 +402,58 @@ def batch_process():
         ensure_ee()
         DB_URL = os.getenv("DB_URL", "postgresql+psycopg://app:app@postgres:5432/app")
         dsn = DB_URL.replace("postgresql+psycopg://", "postgresql://")
-        count = 0
-        with psycopg.connect(dsn,row_factory=dict_row) as conn:
+        with psycopg.connect(dsn,row_factory=dict_row, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT  object_id,ad,rayon,geom FROM parcels WHERE geom IS NOT NULL")
                 rows = cur.fetchall()
-                for row in rows[-5:]:
-                    # print(row["object_id"],row["ad"])
+                for i,row in enumerate(rows):
                     geom = to_ee_geometry(row["geom"], 3857)
 
-                    s2_start, s2_end = daterange(days_back=60)
+                    s2_start, s2_end = daterange(days_back=360)
                     s2_imgs = s2_best_image(geom, s2_start,s2_end,max_cloud=90)
                     total = int(ee.Number(s2_imgs.size()).getInfo())
                     if total == 0:
-                        return []
+                        conn.commit()
+                        continue
                     _lst = s2_imgs.toList(total)
                     img_list = [ee.Image(_lst.get(i)) for i in range(total)]
                     for s2_img in img_list:
                        
-                        # print(f"  Image date: {date}, cloud over AOI: {cloud}%")
                         if s2_img:
                             s2_with_idx = s2_indices(s2_img).clip(geom)
                             try:
                                 
                                 s2_stats = get_reduce_stats_with_timeout(
                                     s2_with_idx, geom,
-                                    deadline=10,     # fail after 5s, then retry
-                                    tries=6,        # total attempts
+                                    deadline=10,    
+                                    tries=6,        
                                     tile_scales=(2,4,8)
         )
                                 print(s2_stats)
-                            # print(f"  Used image from {s2_date} with stats: {s2_stats}")
+                                cur.execute(
+                                    "SELECT 1 FROM sentinelresults WHERE object_id = %s AND img_date = %s",
+                                    (row["object_id"], s2_stats["date"]) 
+                                )
+                                if cur.cur.fetchone():
+                                    print("Already exists.")
+                                    pass
+                                else:
+                                    cur.execute("""
+                                        INSERT INTO  sentinelresults (ad, rayon, object_id,ndvi, ndwi, evi, img_date)
+                                        VALUES (%s, %s,%s, %s, %s, %s,%s);
+                                    """, (row["ad"],row["rayon"],row["object_id"],s2_stats.get("NDVI"), s2_stats.get("NDWI"), s2_stats.get("EVI"),s2_stats.get("date")))
+                        
 
-                                cur.execute("""
-                                    INSERT INTO  sentinelresults (ad, rayon, object_id,ndvi, ndwi, evi, img_date)
-                                    VALUES (%s, %s,%s, %s, %s, %s,%s);
-                                """, (row["ad"],row["rayon"],row["object_id"],s2_stats.get("NDVI"), s2_stats.get("NDWI"), s2_stats.get("EVI"),s2_stats.get("date")))
-                                # single row
                                 
 
                             except Exception as e:
-                                conn.commit()
                                 print(f"  Error obtaining stats: {e}")
+                    
                         else:
                             print("  No suitable Sentinel-2 image found.")
-                conn.commit()
+                    conn.commit()
+                    if (i + 1) % 50 == 0:
+                        print(f"[progress] committed parcels: {i+1}/{len(rows)}")
+
 if __name__ == "__main__":
     batch_process()

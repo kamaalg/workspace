@@ -7,7 +7,7 @@ services:
       - ../:/workspace
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
       - /var/run/docker.sock:/var/run/docker.sock 
-    command: /bin/sh -c "sleep infinity"
+      - ../app/requirements.txt:/app/requirements.txt
     user: root
     depends_on:
       postgres:
@@ -20,6 +20,12 @@ services:
 
     ports:
       - "8001:8000"
+    command: >
+      bash -lc "
+        pip3 install -r app/requirements.txt ||true;
+        exec sleep infinity
+      "
+
   frontend:
     build:
       context: ../frontend
@@ -51,14 +57,17 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://app:app@postgres:5432/airflow
       AIRFLOW__WEBSERVER__SECRET_KEY: changeme
       AIRFLOW_CONN_DATA_POSTGRES: postgresql+psycopg2://app:app@postgres:5432/app
-
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      PYTHONPATH: /workspace 
+      GOOGLE_APPLICATION_CREDENTIALS: /home/airflow/.config/gcloud/application_default_credentials.json
+      GOOGLE_CLOUD_PROJECT: kamal-vuln-scanner
     volumes:
+    - ../:/workspace
     - ../airflow/dags:/opt/airflow/dags
     - airflow_logs:/opt/airflow/logs         
     - airflow_plugins:/opt/airflow/plugins
     - ../airflow/requirements/airflow.txt:/opt/airflow/requirements.txt:ro
-    - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+    - ${HOME}/.config/gcloud:/home/airflow/.config/gcloud:ro
     user: "${AIRFLOW_UID:-50000}:0"
     ports:
       - "8080:8080"
