@@ -26,16 +26,16 @@ services:
         exec sleep infinity
       "
 
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
-    ports:
-      - "8009:80"
-    depends_on: [dev]
+  # frontend:
+  #   build:
+  #     context: ../frontend
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "8009:80"
+  #   depends_on: [dev]
 
   postgres:
-    image: postgres:16-alpine
+    image: postgis/postgis:16-3.4
     environment:
       - POSTGRES_USER=app
       - POSTGRES_PASSWORD=app
@@ -48,7 +48,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432"
+      - "5433:5432"
 
   airflow:
     image: apache/airflow:2.9.3-python3.12   
@@ -70,7 +70,7 @@ services:
     - ${HOME}/.config/gcloud:/home/airflow/.config/gcloud:ro
     user: "${AIRFLOW_UID:-50000}:0"
     ports:
-      - "8080:8080"
+      - "8070:8080"
     command: >
       bash -lc "
         pip install -r /opt/airflow/requirements.txt || true;

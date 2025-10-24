@@ -451,6 +451,7 @@ def batch_process():
                     
                         else:
                             print("  No suitable Sentinel-2 image found.")
+                    print("Saving to db for parcel",row["object_id"])
                     conn.commit()
                     if (i + 1) % 50 == 0:
                         print(f"[progress] committed parcels: {i+1}/{len(rows)}")
