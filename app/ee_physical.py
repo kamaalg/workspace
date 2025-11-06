@@ -9,8 +9,10 @@ import ee
 from fastapi import APIRouter, Body, HTTPException
 import matplotlib.dates as mdates
 from shapely import wkt as shapely_wkt
+from shapely import wkb
+
 from shapely.ops import transform as shp_transform
-from shapely.geometry import mapping as shp_mapping
+from shapely.geometry import mapping as shp_mapping, Point
 from pyproj import Transformer
 import pandas as pd
 import psycopg
@@ -49,10 +51,13 @@ def _wkt_to_geojson4326(wkt_str: str, epsg: int) -> Dict[str, Any]:
     return shp_mapping(geom4326)
 
 def to_ee_geometry(
-    geom_input: Union[Dict[str, Any], str],
+    geom_input,
     epsg: int = 4326
 ) -> ee.Geometry:
-    # print(geom_input)
+    print(type(geom_input))
+
+    geom_input = str(wkb.loads(bytes.fromhex(geom_input)))
+    print(geom_input)
     if isinstance(geom_input, dict):
         return _geojson4326_to_ee(geom_input)
     if isinstance(geom_input, str):
@@ -65,18 +70,13 @@ def to_ee_geometry(
 # Sentinel-2 (indices)
 # =========================
 
-def _pick_first(col: ee.ImageCollection) -> Optional[ee.Image]:
-    # if col.size().getInfo() == 0:
-    #     return None
-    # print(col.first().getInfo())
-    return ee.Image(col.first())
 
 def _fmt_date(img: Optional[ee.Image]) -> Optional[str]:
     if img is None:
         return None
     return ee.Date(img.get('system:time_start')).format('YYYY-MM-dd')
 
-
+#Sentinel 1 radardan ve weatherdan  info baxmaq, 10 by 10 pointlernen baxmaraq, store raw,5 parcel
 
 def s2_best_image(
     aoi: ee.Geometry,
@@ -85,13 +85,11 @@ def s2_best_image(
     max_cloud: int = 90,
     prob_thresh: int = 40
 ) -> Optional[ee.Image]:
-    # S2 SR (A+B)
     sr = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
           .filterBounds(aoi)
           .filterDate(start, end)
           .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", max_cloud)))
 
-    # S2 cloud probability
     cp = (ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
           .filterBounds(aoi)
           .filterDate(start, end))
@@ -116,15 +114,15 @@ def s2_best_image(
                 .sort('system:time_start"', False)); 
             
     # try:
-    #     # print("scenes:", ranked.size().getInfo())
-    #     # print('SR count:', sr.size().getInfo())
-    #     # print('CP count:', cp.size().getInfo())
-    #     # print('JOINED (with clouds):', joined.size().getInfo())
-    #     # print('RANKED (has aoi_cloud_prob):', ranked.size().getInfo())
+    #     print("scenes:", ranked.size().getInfo())
+    #     print('SR count:', sr.size().getInfo())
+    #     print('CP count:', cp.size().getInfo())
+    #     print('JOINED (with clouds):', joined.size().getInfo())
+    #     print('RANKED (has aoi_cloud_prob):', ranked.size().getInfo())
 
-    #     # dates = ee.List(ranked.aggregate_array('system:time_start')) \
-    #     #         .map(lambda t: ee.Date(t).format('YYYY-MM-dd'))
-    #     # print('Dates:', dates.getInfo())
+    #     dates = ee.List(ranked.aggregate_array('system:time_start')) \
+    #             .map(lambda t: ee.Date(t).format('YYYY-MM-dd'))
+    #     print('Dates:', dates.getInfo())
 
         
     # except Exception:
@@ -136,12 +134,12 @@ def s2_best_image(
         clouds = ee.Image(img.get('clouds')).select('probability')
         scl = img.select('SCL')
         cloud_ok = clouds.lt(prob_thresh)
-        scl_ok = (scl.neq(3)  # cloud shadow
-                .And(scl.neq(8))  # medium clouds
-                .And(scl.neq(9))  # high clouds
-                .And(scl.neq(10)) # thin cirrus
-                .And(scl.neq(11)))# snow/ice
-        veg_only = scl.eq(4)#new change
+        scl_ok = (scl.neq(3)  
+                .And(scl.neq(8)) 
+                .And(scl.neq(9)) 
+                .And(scl.neq(10)) 
+                .And(scl.neq(11)))
+        veg_only = scl.eq(4)
 
         return img.updateMask(cloud_ok.And(scl_ok).And(veg_only))
 
@@ -174,14 +172,13 @@ from ee.ee_exception import EEException
 import ee
 
 def get_reduce_stats_with_timeout(img_idx, geom,
-                                  deadline=5,          # fail fast in 5s
-                                  tries=6,             # total attempts
-                                  base_sleep=0.5,      # backoff base
-                                  jitter=0.2,          # +/- 20% jitter
-                                  tile_scales=(2, 4, 8)):  # ramp up tileScale
+                                  deadline=5,          
+                                  tries=6,             
+                                  base_sleep=0.5,      
+                                  jitter=0.2,         
+                                  tile_scales=(2, 4, 8)): 
     last_err = None
     for attempt in range(tries):
-        # ramp tileScale as attempts increase (helps with memory)
         tile_scale = tile_scales[min(attempt, len(tile_scales)-1)]
 
         expr = img_idx.select(['NDVI','NDWI','EVI']).reduceRegion(
@@ -197,7 +194,7 @@ def get_reduce_stats_with_timeout(img_idx, geom,
         out_expr = ee.Dictionary(expr).combine({"date": date_expr})
         try:
             try:
-                ee.data.setDeadline(deadline)  # seconds
+                ee.data.setDeadline(deadline)  
             except Exception:
                 pass
             return out_expr.getInfo()
@@ -211,6 +208,147 @@ def get_reduce_stats_with_timeout(img_idx, geom,
             time.sleep(min(10.0, sleep))  # cap sleep
     raise last_err
 
+
+def insert_sentinelraw(cur, img: ee.Image, geom, ad: str, rayon: str, object_id: str):
+   
+    bands = ["B2","B3","B4","B5","B6","B8A","B8","B11","B12"]
+    try:
+        expr = img.select(bands).reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=geom,
+            scale=10,
+            bestEffort=True,
+            maxPixels=1e9
+        )
+        values = expr.getInfo() or {}
+    except Exception as e:
+        print(f"  Error reducing raw bands for sentinelraw: {e}")
+        return
+
+    scaled = {}
+    for b in bands:
+        raw = values.get(b)
+        if raw is None:
+            scaled[b] = None
+        else:
+            try:
+                scaled[b] = float(raw) * 0.0001
+            except Exception:
+                scaled[b] = None
+
+    try:
+        cur.execute(
+            """
+            INSERT INTO sentinelraw (object_id, b2, b3, b4, b5, b6, b8a, b8, b11, b12)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (object_id) DO UPDATE SET
+              b2 = EXCLUDED.b2,
+              b3 = EXCLUDED.b3,
+              b4 = EXCLUDED.b4,
+              b5 = EXCLUDED.b5,
+              b6 = EXCLUDED.b6,
+              b8a = EXCLUDED.b8a,
+              b8 = EXCLUDED.b8,
+              b11 = EXCLUDED.b11,
+              b12 = EXCLUDED.b12;
+            """,
+            (
+                int(object_id),
+                scaled.get("B2"), scaled.get("B3"), scaled.get("B4"), scaled.get("B5"),
+                scaled.get("B6"), scaled.get("B8A"), scaled.get("B8"), scaled.get("B11"), scaled.get("B12")
+            ),
+        )
+    except Exception as e:
+        print(f"  Error inserting/updating sentinelraw row: {e}")
+
+
+def sample_parcel_points(img: ee.Image, geom: ee.Geometry, scale: int = 10, max_points: int = 5000):
+
+    bands = ["B2","B3","B4","B5","B6","B7","B8","B8A","B11","B12"]
+    fc = img.select(bands).sample(region=geom, scale=scale, geometries=True)
+    info = None
+    try:
+        info = fc.getInfo()
+    except Exception as e:
+        print(f"  Error fetching samples via getInfo(): {e}")
+        return []
+
+    features = info.get("features", [])
+    if len(features) > max_points:
+        print(f"  Too many samples ({len(features)}) - increase max_points or use export workflow.")
+        return []
+
+    out = []
+    for f in features:
+        props = f.get("properties", {})
+        geom_f = f.get("geometry")
+        if not geom_f or geom_f.get("type") != "Point":
+            continue
+        lon, lat = geom_f.get("coordinates", [None, None])
+        # scale reflectance to 0..1 when present
+        scaled_props = {}
+        for b, v in props.items():
+            if v is None:
+                scaled_props[b] = None
+            else:
+                try:
+                    scaled_props[b] = float(v) * 0.0001
+                except Exception:
+                    scaled_props[b] = None
+
+        out.append({"lon": lon, "lat": lat, "properties": scaled_props})
+    return out
+
+
+
+
+
+def ee_sample_and_get_samples(img, geom: ee.Geometry, scale: int = 10):
+  
+    
+
+    BANDS = ["B2","B3","B4","B5","B6","B7","B8","B8A","B11","B12"]
+
+    proj = img.select('B2').projection().atScale(scale)
+
+    pixel_centers = (ee.Image.pixelLonLat()
+                     .reproject(proj)
+                     .sample(region=geom, projection=proj, geometries=True)
+                     .distinct(['longitude','latitude']))
+
+    try:
+        sampled = (img.select(BANDS)
+                     .sampleRegions(collection=pixel_centers,
+                                    projection=proj,
+                                    geometries=True))
+        info = sampled.getInfo() 
+    except Exception as e:
+        print(f"  Error sampling regions server-side: {e}")
+        return []
+
+    out = []
+    for f in info.get("features", []):
+        geom_f = (f.get("geometry") or {})
+        if geom_f.get("type") != "Point":
+            continue
+        lon, lat = geom_f.get("coordinates", [None, None])
+
+        props = f.get("properties", {}) or {}
+        scaled_props = {}
+        for k, v in props.items():
+            if v is None:
+                scaled_props[k] = None
+            elif k in BANDS:
+                try:
+                    scaled_props[k] = float(v) * 0.0001
+                except Exception:
+                    scaled_props[k] = None
+            else:
+               
+                pass
+
+        out.append({"lon": lon, "lat": lat, "properties": scaled_props})
+    return out
 
 # =========================
 # FastAPI router
@@ -265,6 +403,14 @@ def get_graphs(rayon: str, ad: str, object_id: str):
                 ORDER BY img_date ASC
             """, (rayon, ad, object_id))
             rows = cur.fetchall()
+            cur.execute("""
+                SELECT lat, lon, NDVI, NDWI, EVI, object_id, img_date
+                FROM sentinelcenter
+                WHERE object_id=%s
+                  AND NDVI IS NOT NULL AND NDWI IS NOT NULL AND EVI IS NOT NULL
+                ORDER BY img_date ASC
+            """, (int(object_id),))
+            third_rows = cur.fetchall()
 
     if not rows:
         from fastapi import HTTPException
@@ -280,7 +426,12 @@ def get_graphs(rayon: str, ad: str, object_id: str):
             
         dates.append(d)
 
-    fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(12, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        nrows=3, figsize=(12, 11),
+        sharex=False,
+        gridspec_kw={"height_ratios": [3, 1.2, 2.0]}  # more space for table
+    )
+
 
     ax1.plot(dates, ndvi, marker="o", label="NDVI")
     ax1.plot(dates, ndwi, marker="o", label="NDWI")
@@ -340,11 +491,117 @@ def get_graphs(rayon: str, ad: str, object_id: str):
 
     fig.tight_layout()
 
+    ax3.axis('off')
+    
+    if third_rows:
+        df = pd.DataFrame(third_rows).rename(columns={"img_date": "date"})
+        df = df[["date", "lon", "lat", "ndvi", "evi", "ndwi"]].copy()
+
+        # Format/display versions (don’t mutate source types needed elsewhere)
+        df_disp = df.copy()
+        # Dates → ISO (yyyy-mm-dd)
+        try:
+            df_disp["date"] = pd.to_datetime(df_disp["date"]).dt.date.astype(str)
+        except Exception:
+            df_disp["date"] = df_disp["date"].astype(str)
+
+        # Numeric formatting
+        df_disp["lon"]  = pd.to_numeric(df_disp["lon"], errors="coerce").round(6).map(lambda x: f"{x:.6f}" if pd.notna(x) else "")
+        df_disp["lat"]  = pd.to_numeric(df_disp["lat"], errors="coerce").round(6).map(lambda x: f"{x:.6f}" if pd.notna(x) else "")
+        for col in ["ndvi","evi","ndwi"]:
+            df_disp[col] = pd.to_numeric(df_disp[col], errors="coerce").round(3).map(lambda x: f"{x:.3f}" if pd.notna(x) else "")
+
+        # Pretty labels
+        col_labels = ["Date", "Lon", "Lat", "NDVI", "EVI", "NDWI"]
+
+        # Head / … / Tail to avoid a super tall table
+        MAX_HEAD, MAX_TAIL = 12, 6
+        if len(df_disp) > (MAX_HEAD + MAX_TAIL + 1):
+            shown = pd.concat(
+                [df_disp.head(MAX_HEAD),
+                pd.DataFrame([["…"] * len(col_labels)], columns=df_disp.columns),
+                df_disp.tail(MAX_TAIL)],
+                ignore_index=True
+            )
+            subtitle = f"showing {MAX_HEAD}+{MAX_TAIL} of {len(df_disp)}"
+        else:
+            shown = df_disp
+            subtitle = f"showing {len(df_disp)} of {len(df_disp)}"
+
+        ax3.clear()
+        ax3.axis("off")
+
+        # Rounded white card behind the table
+        from matplotlib.patches import FancyBboxPatch
+        card = FancyBboxPatch(
+            (0.02, 0.02), 0.96, 0.96,
+            boxstyle="round,pad=0.012,rounding_size=8",
+            linewidth=0.8, edgecolor="#e5e7eb", facecolor="white",
+            transform=ax3.transAxes, zorder=-1
+        )
+        ax3.add_patch(card)
+
+        # Build the table
+        tbl = ax3.table(
+            cellText=shown.values,
+            colLabels=col_labels,
+            bbox=[0.04, 0.06, 0.92, 0.88],  # [left, bottom, width, height] inside the card
+            cellLoc="left",
+            colLoc="left",
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(8)
+
+        # Slightly larger, bold header with soft background
+        for c in range(len(col_labels)):
+            hcell = tbl[(0, c)]
+            hcell.set_text_props(weight="bold")
+            hcell.set_facecolor("#f3f4f6")
+            hcell.set_edgecolor("#e5e7eb")
+            hcell.set_linewidth(0.8)
+            hcell.PAD = 0.18
+
+        # Style data cells: zebra stripes, thin dividers, padding
+        n_rows = shown.shape[0]
+        n_cols = shown.shape[1]
+        for r in range(1, n_rows + 1):
+            bg = "#ffffff" if (r % 2 == 1) else "#fafafa"
+            for c in range(n_cols):
+                cell = tbl[(r, c)]
+                cell.set_facecolor(bg)
+                cell.set_edgecolor("#eeeff1")
+                cell.set_linewidth(0.6)
+                cell.PAD = 0.14
+
+        # Align numeric columns to the right
+        numeric_cols = {1, 2, 3, 4, 5}  # Lon, Lat, NDVI, EVI, NDWI (0=Date)
+        for r in range(1, n_rows + 1):
+            for c in numeric_cols:
+                tbl[(r, c)]._loc = "right"  # right-align text in numeric columns
+
+        # Column width tweaks (Date slightly wider, others even)
+        col_widths = [0.22, 0.15, 0.15, 0.16, 0.16, 0.16]
+        for c, w in enumerate(col_widths):
+            tbl.auto_set_column_width(col=list(range(n_cols)))
+            tbl._cells[(0, c)].set_width(w)
+
+        ax3.set_title(
+            f"Sample points — {subtitle}",
+            fontsize=10, pad=6, loc="left",
+        )
+    else:
+        ax3.axis("off")
+        ax3.text(0.5, 0.5, "No per-point samples found", ha="center", va="center", fontsize=10)
+
+# Keep after all layout
+    fig.tight_layout()
+
+
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
-    return StreamingResponse(buf, media_type="image/png")      
+    return StreamingResponse(buf, media_type="image/png")
          
                     
 
@@ -355,7 +612,7 @@ def physical_today(body: Dict[str, Any] = Body(...)):
 
     geom_geojson = body.get("geom_geojson")
     geom_wkt = body.get("geom_wkt")
-    print("GGEOM_WKT",geom_wkt)
+    print("GEOM_WKT",geom_wkt)
     epsg = int(body.get("epsg", 4326))
 
     if geom_geojson:
@@ -394,7 +651,41 @@ def physical_today(body: Dict[str, Any] = Body(...)):
         },
       
     }
+def record_centers(center_list,cur,object_id,img_date,conn):
 
+    for center in center_list:
+        
+        lon = center['lon']
+        lat = center['lat']
+        properties = center['properties']
+        
+        cur.execute(
+    """
+    INSERT INTO sentinelraw
+      (object_id, b2, b3, b4, b5, b6, b8a, b8, b11, b12, lat, lon, img_date)
+    VALUES
+      (%s,       %s, %s, %s, %s, %s, %s,  %s, %s,  %s,  %s,  %s,  %s)
+    ON CONFLICT (object_id, lon, lat, img_date) DO NOTHING
+    """,
+    (object_id,
+     properties.get("B2"), properties.get("B3"), properties.get("B4"),
+     properties.get("B5"), properties.get("B6"), properties.get("B8A"),
+     properties.get("B8"), properties.get("B11"), properties.get("B12"),
+     lat, lon, img_date)
+)
+        ndvi = (properties['B8']-properties['B4'])/(properties['B8']+properties['B4'])
+        ndwi = (properties['B3']-properties['B8'])/(properties['B8']+properties['B3'])
+        nir  = properties['B8']
+        red  = properties['B4']
+        blue = properties['B2']
+
+        # small epsilon to avoid divide-by-zero
+        den = (nir + 6*red - 7.5*blue + 1)
+        evi = 2.5 * (nir - red) / den if den != 0 else None
+        cur.execute(""" INSERT INTO  sentinelcenter (ndvi, ndwi, evi,object_id, lon, lat, img_date)
+                          VALUES (%s, %s,%s, %s, %s, %s,%s);
+            """, (ndvi,ndwi,evi,object_id,lon,lat,img_date))
+    conn.commit()
 # =========================
 # Batch process
 # =========================
@@ -406,18 +697,30 @@ def batch_process():
             with conn.cursor() as cur:
                 cur.execute("SELECT  object_id,ad,rayon,geom FROM parcels WHERE geom IS NOT NULL")
                 rows = cur.fetchall()
-                for i,row in enumerate(rows):
+                for i,row in enumerate(rows[-5:]):
+                    
                     geom = to_ee_geometry(row["geom"], 3857)
 
-                    s2_start, s2_end = daterange(days_back=360)
-                    s2_imgs = s2_best_image(geom, s2_start,s2_end,max_cloud=90)
-                    total = int(ee.Number(s2_imgs.size()).getInfo())
-                    if total == 0:
-                        conn.commit()
-                        continue
-                    _lst = s2_imgs.toList(total)
+                    s2_start, s2_end = daterange(days_back=30)
+                    s2_imgs = s2_best_image(geom, s2_start,s2_end,max_cloud=60)
+                    def add_date(img):
+                        return img.set('date_ymd', ee.Date(img.get('system:time_start')).format('YYYY-MM-dd'))
+
+                    s2_by_day = s2_imgs.map(add_date).distinct('date_ymd')
+
+                    total    = int(s2_by_day.size().getInfo())
+                    _lst     = s2_by_day.toList(total)
                     img_list = [ee.Image(_lst.get(i)) for i in range(total)]
+                    print(img_list)
+                    
                     for s2_img in img_list:
+                        date_str = ee.Date(s2_img.get('system:time_start')) \
+                            .format('YYYY-MM-dd').getInfo()
+                        print(date_str)
+
+                        centers = ee_sample_and_get_samples(s2_img,geom=geom)
+                        record_centers(centers,cur,row["object_id"],date_str,conn)
+
                        
                         if s2_img:
                             s2_with_idx = s2_indices(s2_img).clip(geom)
@@ -434,14 +737,18 @@ def batch_process():
                                     "SELECT 1 FROM sentinelresults WHERE object_id = %s AND img_date = %s",
                                     (row["object_id"], s2_stats["date"]) 
                                 )
-                                if cur.cur.fetchone():
+                                if cur.fetchone():
                                     print("Already exists.")
-                                    pass
                                 else:
                                     cur.execute("""
                                         INSERT INTO  sentinelresults (ad, rayon, object_id,ndvi, ndwi, evi, img_date)
                                         VALUES (%s, %s,%s, %s, %s, %s,%s);
                                     """, (row["ad"],row["rayon"],row["object_id"],s2_stats.get("NDVI"), s2_stats.get("NDWI"), s2_stats.get("EVI"),s2_stats.get("date")))
+                                    # also insert raw-band means into sentinelraw
+                                    # try:
+                                    #     insert_sentinelraw(cur, s2_img, geom, row["ad"], row["rayon"], row["object_id"])
+                                    # except Exception as e:
+                                    #     print(f"  Error inserting sentinelraw: {e}")
                         
 
                                 
@@ -455,6 +762,9 @@ def batch_process():
                     conn.commit()
                     if (i + 1) % 50 == 0:
                         print(f"[progress] committed parcels: {i+1}/{len(rows)}")
+
+
+
 
 if __name__ == "__main__":
     batch_process()
