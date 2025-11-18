@@ -66,9 +66,7 @@ def to_ee_geometry(
     raise HTTPException(status_code=400, detail="Provide GeoJSON (dict) or WKT (str).")
 
 
-# =========================
-# Sentinel-2 (indices)
-# =========================
+
 
 
 def _fmt_date(img: Optional[ee.Image]) -> Optional[str]:
@@ -76,7 +74,6 @@ def _fmt_date(img: Optional[ee.Image]) -> Optional[str]:
         return None
     return ee.Date(img.get('system:time_start')).format('YYYY-MM-dd')
 
-#Sentinel 1 radardan ve weatherdan  info baxmaq, 10 by 10 pointlernen baxmaraq, store raw,5 parcel
 
 def s2_best_image(
     aoi: ee.Geometry,
@@ -165,6 +162,62 @@ def s2_indices(img: ee.Image) -> ee.Image:
     return img.addBands([ndvi, ndwi, evi])
 
 
+def s1_images(aoi: ee.Geometry, start: str, end: str) -> ee.ImageCollection:
+    col = (ee.ImageCollection("COPERNICUS/S1_GRD")
+           .filterBounds(aoi)
+           .filterDate(start, end)
+           .filter(ee.Filter.eq('instrumentMode', 'IW'))
+    )
+    return col
+
+
+def get_reduce_s1_stats(img: ee.Image, geom: ee.Geometry,
+                        deadline=100, tries=6, base_sleep=0.5, jitter=0.2,
+                        tile_scales=(2, 4, 8)) -> Optional[Dict[str, Any]]:
+    import time, random
+    last_err = None
+    for attempt in range(tries):
+        tile_scale = tile_scales[min(attempt, len(tile_scales) - 1)]
+        expr = img.select(['VV', 'VH']).reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=geom,
+            scale=30,
+            bestEffort=True,
+            maxPixels=1e9,
+            tileScale=tile_scale
+        )
+        date_expr = ee.Date(img.get('system:time_start')).format('YYYY-MM-dd')
+        out_expr = ee.Dictionary(expr).combine({'date': date_expr})
+        try:
+            try:
+                ee.data.setDeadline(deadline)
+            except Exception:
+                pass
+            vals = out_expr.getInfo()
+            # compute ratio safely
+            vv = vals.get('VV')
+            vh = vals.get('VH')
+            ratio = None
+            try:
+                if vv is not None and vh is not None and vh != 0:
+                    ratio = float(vv) / float(vh)
+            except Exception:
+                ratio = None
+            vals['vv_mean'] = vv
+            vals['vh_mean'] = vh
+            vals['vv_vh_ratio'] = ratio
+            return vals
+        except Exception as e:
+            msg = str(e)
+            if 'Invalid geometry' in msg or 'Feature has no geometry' in msg:
+                raise
+            last_err = e
+            sleep = base_sleep * (2 ** attempt) * (1.0 + jitter * random.random())
+            time.sleep(min(10.0, sleep))
+    raise last_err
+
+
+
 
 
 import time, random
@@ -209,7 +262,7 @@ def get_reduce_stats_with_timeout(img_idx, geom,
     raise last_err
 
 
-def insert_sentinelraw(cur, img: ee.Image, geom, ad: str, rayon: str, object_id: str):
+def insert_sentinelraw(cur, img: ee.Image, geom, ad: str, rayon: str, object_id: str,date: str):
    
     bands = ["B2","B3","B4","B5","B6","B8A","B8","B11","B12"]
     try:
@@ -239,7 +292,7 @@ def insert_sentinelraw(cur, img: ee.Image, geom, ad: str, rayon: str, object_id:
     try:
         cur.execute(
             """
-            INSERT INTO sentinelraw (object_id, b2, b3, b4, b5, b6, b8a, b8, b11, b12)
+            INSERT INTO sentinelraw (object_id, b2, b3, b4, b5, b6, b8a, b8, b11, b12,ad,rayon,date)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (object_id) DO UPDATE SET
               b2 = EXCLUDED.b2,
@@ -353,17 +406,15 @@ def ee_sample_and_get_samples(img, geom: ee.Geometry, scale: int = 10):
 # =========================
 # FastAPI router
 # =========================
+# have to create ml model that understands if cotton is growing healthy so no thesholds model needs to understand thart
 COTTON_PHASE_SPEC = [
-    # Off-season
     (("01-01","04-14"), "Off-season",   {"NDVI": (0.05, 0.20), "EVI": (0.05, 0.15), "NDWI": (-0.20, 0.05)}),
-    # Growing season windows (example for temperate N. hemisphere)
     (("04-15","05-15"), "Emergence",    {"NDVI": (0.15, 0.35), "EVI": (0.10, 0.25), "NDWI": (-0.05, 0.15)}),
     (("05-16","06-15"), "Vegetative",   {"NDVI": (0.35, 0.55), "EVI": (0.20, 0.40), "NDWI": (0.00,  0.20)}),
     (("06-16","07-10"), "Squaring",     {"NDVI": (0.50, 0.65), "EVI": (0.30, 0.45), "NDWI": (0.05,  0.25)}),
     (("07-11","08-10"), "Flowering",    {"NDVI": (0.60, 0.80), "EVI": (0.35, 0.55), "NDWI": (0.05,  0.25)}),
     (("08-11","09-15"), "Boll formation",{"NDVI": (0.55,0.75), "EVI": (0.35, 0.50), "NDWI": (0.00,  0.20)}),
     (("09-16","10-31"), "Boll opening / Harvest", {"NDVI": (0.30, 0.55), "EVI": (0.20, 0.40), "NDWI": (-0.05, 0.15)}),
-    # Late off-season
     (("11-01","12-31"), "Post-harvest", {"NDVI": (0.05, 0.25), "EVI": (0.05, 0.15), "NDWI": (-0.20, 0.05)}),
 ]
 def _md(d: datetime) -> str:
@@ -654,6 +705,7 @@ def physical_today(body: Dict[str, Any] = Body(...)):
 def record_centers(center_list,cur,object_id,img_date,conn):
 
     for center in center_list:
+        print(center)
         
         lon = center['lon']
         lat = center['lat']
@@ -665,7 +717,6 @@ def record_centers(center_list,cur,object_id,img_date,conn):
       (object_id, b2, b3, b4, b5, b6, b8a, b8, b11, b12, lat, lon, img_date)
     VALUES
       (%s,       %s, %s, %s, %s, %s, %s,  %s, %s,  %s,  %s,  %s,  %s)
-    ON CONFLICT (object_id, lon, lat, img_date) DO NOTHING
     """,
     (object_id,
      properties.get("B2"), properties.get("B3"), properties.get("B4"),
@@ -675,6 +726,18 @@ def record_centers(center_list,cur,object_id,img_date,conn):
 )
         ndvi = (properties['B8']-properties['B4'])/(properties['B8']+properties['B4'])
         ndwi = (properties['B3']-properties['B8'])/(properties['B8']+properties['B3'])
+        gndvi = (properties['B8']-properties['B3'])/(properties['B8']+properties['B3'])
+        mtci = (properties['B6']-properties['B5'])/(properties['B5']-properties['B4'])
+        re_r = properties['B5']/properties['B4']
+        grvi = (properties['B3']-properties['B4'])/(properties['B3']+properties['B4'])
+        ndmi = (properties['B8']-properties['B11'])/(properties['B8']+properties['B11'])
+        ndii = (properties['B8']-properties['B12'])/(properties['B8']+properties['B12'])
+        lswi = (properties['B8']-properties['B11'])/(properties['B8']+properties['B11'])
+        bsi = ((properties['B11']+properties['B4'])-(properties['B8']+properties['B2']))/((properties['B11']+properties['B4'])+(properties['B8']+properties['B2']))
+        ndbi = (properties['B11']-properties['B8'])/(properties['B11']+properties['B8'])
+        ndti = (properties['B11']-properties['B12'])/(properties['B11']+properties['B12'])
+        swir_b11 = properties['B11']
+        swir_b12 = properties['B12']
         nir  = properties['B8']
         red  = properties['B4']
         blue = properties['B2']
@@ -682,9 +745,29 @@ def record_centers(center_list,cur,object_id,img_date,conn):
         # small epsilon to avoid divide-by-zero
         den = (nir + 6*red - 7.5*blue + 1)
         evi = 2.5 * (nir - red) / den if den != 0 else None
-        cur.execute(""" INSERT INTO  sentinelcenter (ndvi, ndwi, evi,object_id, lon, lat, img_date)
-                          VALUES (%s, %s,%s, %s, %s, %s,%s);
-            """, (ndvi,ndwi,evi,object_id,lon,lat,img_date))
+        cur.execute("""
+    INSERT INTO sentinelcenter
+      (ndvi, ndwi, evi,
+       gndvi, mtci, re_r, grvi,
+       ndmi, ndii, lswi,
+       bsi, ndbi, ndti,
+       swir_b11, swir_b12,
+       object_id, lon, lat, img_date)  VALUES
+(%s, %s, %s,
+       %s, %s, %s, %s,
+       %s, %s, %s,
+       %s, %s, %s,
+       %s, %s,
+       %s, %s, %s, %s)
+""", (
+    ndvi, ndwi, evi,
+    gndvi, mtci, re_r, grvi,
+    ndmi, ndii, lswi,
+    bsi, ndbi, ndti,
+    swir_b11, swir_b12,
+    object_id, lon, lat, img_date
+))
+
     conn.commit()
 # =========================
 # Batch process
@@ -718,46 +801,77 @@ def batch_process():
                             .format('YYYY-MM-dd').getInfo()
                         print(date_str)
 
-                        centers = ee_sample_and_get_samples(s2_img,geom=geom)
-                        record_centers(centers,cur,row["object_id"],date_str,conn)
+                        # centers = ee_sample_and_get_samples(s2_img,geom=geom)
+                        # record_centers(centers,cur,row["object_id"],date_str,conn)
 
                        
                         if s2_img:
                             s2_with_idx = s2_indices(s2_img).clip(geom)
                             try:
                                 
-                                s2_stats = get_reduce_stats_with_timeout(
-                                    s2_with_idx, geom,
-                                    deadline=10,    
-                                    tries=6,        
-                                    tile_scales=(2,4,8)
-        )
-                                print(s2_stats)
-                                cur.execute(
-                                    "SELECT 1 FROM sentinelresults WHERE object_id = %s AND img_date = %s",
-                                    (row["object_id"], s2_stats["date"]) 
-                                )
-                                if cur.fetchone():
-                                    print("Already exists.")
-                                else:
-                                    cur.execute("""
-                                        INSERT INTO  sentinelresults (ad, rayon, object_id,ndvi, ndwi, evi, img_date)
-                                        VALUES (%s, %s,%s, %s, %s, %s,%s);
-                                    """, (row["ad"],row["rayon"],row["object_id"],s2_stats.get("NDVI"), s2_stats.get("NDWI"), s2_stats.get("EVI"),s2_stats.get("date")))
-                                    # also insert raw-band means into sentinelraw
-                                    # try:
-                                    #     insert_sentinelraw(cur, s2_img, geom, row["ad"], row["rayon"], row["object_id"])
-                                    # except Exception as e:
-                                    #     print(f"  Error inserting sentinelraw: {e}")
+        #                         s2_stats = get_reduce_stats_with_timeout(
+        #                             s2_with_idx, geom,
+        #                             deadline=10,    
+        #                             tries=6,        
+        #                             tile_scales=(2,4,8)
+        # )
+        #                         print(s2_stats)
+        #                         cur.execute(
+        #                             "SELECT 1 FROM sentinelresults WHERE object_id = %s AND img_date = %s",
+        #                             (row["object_id"], s2_stats["date"]) 
+        #                         )
+                                # if cur.fetchone():
+                                #     print("Already exists.")
+                                # else:
+                                #     cur.execute("""
+                                #         INSERT INTO  sentinelresults (ad, rayon, object_id,ndvi, ndwi, evi, img_date)
+                                #         VALUES (%s, %s,%s, %s, %s, %s,%s);
+                                #     """, (row["ad"],row["rayon"],row["object_id"],s2_stats.get("NDVI"), s2_stats.get("NDWI"), s2_stats.get("EVI"),s2_stats.get("date")))
+                                   
+
+                                # Sentinel-1 processing: fetch S1 images in same date window and store VV/VH means
+                                try:
+                                    s1_start, s1_end = s2_start, s2_end
+                                    s1_col = s1_images(geom, s1_start, s1_end)
+                                    def add_date_s1(img):
+                                        return img.set('date_ymd', ee.Date(img.get('system:time_start')).format('YYYY-MM-dd'))
+                                    s1_by_day = s1_col.map(add_date_s1).distinct('date_ymd')
+                                    total_s1 = int(s1_by_day.size().getInfo())
+                                    s1_list = s1_by_day.toList(total_s1)
+                                    for si in range(total_s1):
+                                        s1_img = ee.Image(s1_list.get(si))
+                                        try:
+                                            s1_stats = get_reduce_s1_stats(s1_img, geom, deadline=10, tries=4, tile_scales=(1,2,4))
+                                        except Exception as e:
+                                            print(f"  Error obtaining S1 stats: {e}")
+                                            continue
+                                        if not s1_stats:
+                                            continue
+                                        img_date = s1_stats.get('date')
+                                        vv = s1_stats.get('vv_mean')
+                                        vh = s1_stats.get('vh_mean')
+                                        ratio = s1_stats.get('vv_vh_ratio')
+                                        try:
+                                            cur.execute("SELECT 1 FROM sentinel1results WHERE object_id=%s AND img_date=%s", (row['object_id'], img_date))
+                                            if not cur.fetchone():
+                                                cur.execute(
+                                                    "INSERT INTO sentinel1results (object_id, ad, rayon, vv_mean, vh_mean, vv_vh_ratio, img_date) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                                                    (row['object_id'], row['ad'], row['rayon'], vv, vh, ratio, img_date)
+                                                )
+                                        except Exception as e:
+                                            print(f"Error inserting S1 row: {e}")
+                                except Exception as e:
+                                    print(f"Error fetching S1 collection: {e}")
+                            except Exception as e:
+                                print("Something went wrong")
                         
 
                                 
 
-                            except Exception as e:
-                                print(f"  Error obtaining stats: {e}")
+                            
                     
-                        else:
-                            print("  No suitable Sentinel-2 image found.")
+                    else:
+                        print("  No suitable Sentinel-2 image found.")
                     print("Saving to db for parcel",row["object_id"])
                     conn.commit()
                     if (i + 1) % 50 == 0:

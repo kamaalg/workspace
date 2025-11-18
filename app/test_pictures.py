@@ -1,25 +1,15 @@
 import ee
-ee.Initialize()
 
-lon, lat = 47.0772162354938, 39.996104389160976 
-aoi = ee.Geometry.Point(lon, lat).buffer(1000)  
+# If you're using a service account:
+# ee.Initialize(credentials=creds, project='kamal-vuln-scanner')
+ee.Initialize(project='kamal-vuln-scanner')
 
-collection = (
-    ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-    .filterBounds(aoi)
-    .filterDate("2025-07-01", "2025-07-31")
-    .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 10))
-)
+img = ee.Image('LANDSAT/LC08/C01/T1/LC08_044034_20140318')
 
-img = collection.sort("CLOUDY_PIXEL_PERCENTAGE").first()
-
-rgb_vis = img.visualize(bands=["B4", "B3", "B2"], min=0, max=3000)
-
-task = ee.batch.Export.image.toDrive(
-    image=rgb_vis,
-    description="Sentinel2_RGB_CottonTest",
-    folder="Sentinel_Images",
-    region=aoi,
-    scale=10
-)
-task.start()
+try:
+    info = img.getInfo()
+    print("Got image info OK:")
+    print(info.keys())
+except Exception as e:
+    import traceback
+    traceback.print_exc()

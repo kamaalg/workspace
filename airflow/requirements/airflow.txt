@@ -6,3 +6,4 @@ earthengine-api
 fastapi
 uvicorn[standard]
 pyproj
+shapely
