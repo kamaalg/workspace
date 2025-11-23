@@ -296,6 +296,8 @@ def sentinel_collection_pipeline():
                         max_cloud=MAX_CLOUD_COVERAGE,
                         prob_thresh=CLOUD_PROB_THRESHOLD
                     )
+                    # TODO: add meteo
+                    # TODO
                     total_images = int(ee.Number(s2_imgs.size()).getInfo())
                     if total_images == 0:
                         stats["skipped_no_images"] += 1
