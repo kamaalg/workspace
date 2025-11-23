@@ -6,16 +6,20 @@ from fastapi.responses import StreamingResponse, JSONResponse
 import matplotlib
 matplotlib.use("Agg")
 import ee
+import statistics
+
 from fastapi import APIRouter, Body, HTTPException
 import matplotlib.dates as mdates
 from shapely import wkt as shapely_wkt
 from shapely import wkb
-
+import json
 from shapely.ops import transform as shp_transform
 from shapely.geometry import mapping as shp_mapping, Point
 from pyproj import Transformer
 import pandas as pd
 import psycopg
+import requests
+
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
 load_dotenv()
@@ -35,7 +39,6 @@ def daterange(days_back: int = 10) -> Tuple[str, str]:
     end = today_utc() + timedelta(days=1)      
     start = today_utc() - timedelta(days=days_back)
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-
 
 # =========================
 # Geometry helpers
@@ -80,7 +83,7 @@ def s2_best_image(
     start: str,
     end: str,
     max_cloud: int = 90,
-    prob_thresh: int = 40
+    prob_thresh: int = 20
 ) -> Optional[ee.Image]:
     sr = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
           .filterBounds(aoi)
@@ -108,7 +111,7 @@ def s2_best_image(
     ranked = (joined
               .map(add_aoi_cloudprob)
               .filter(ee.Filter.notNull(['aoi_cloud_prob']))
-                .sort('system:time_start"', False)); 
+                .sort('system:time_start', False)); 
             
     # try:
     #     print("scenes:", ranked.size().getInfo())
@@ -135,7 +138,7 @@ def s2_best_image(
                 .And(scl.neq(8)) 
                 .And(scl.neq(9)) 
                 .And(scl.neq(10)) 
-                .And(scl.neq(11)))
+                .And(scl.neq(11)))#TODO: meaning
         veg_only = scl.eq(4)
 
         return img.updateMask(cloud_ok.And(scl_ok).And(veg_only))
@@ -363,7 +366,8 @@ def ee_sample_and_get_samples(img, geom: ee.Geometry, scale: int = 10):
     BANDS = ["B2","B3","B4","B5","B6","B7","B8","B8A","B11","B12"]
 
     proj = img.select('B2').projection().atScale(scale)
-
+    # buffer_dist = scale / 2  
+    # geom_buffered = geom.buffer(buffer_dist)
     pixel_centers = (ee.Image.pixelLonLat()
                      .reproject(proj)
                      .sample(region=geom, projection=proj, geometries=True)
@@ -402,6 +406,70 @@ def ee_sample_and_get_samples(img, geom: ee.Geometry, scale: int = 10):
 
         out.append({"lon": lon, "lat": lat, "properties": scaled_props})
     return out
+def s1_sample_and_get_centers(img, geom: ee.Geometry, scale: int = 10):
+    """
+    Sample Sentinel-1 pixel centers (VV, VH) inside/near a geometry.
+
+    Returns a list of:
+      { "lon": float, "lat": float, "properties": {"VV": value, "VH": value} }
+    """
+
+    BANDS = ["VV", "VH"]
+
+    # Use S1 VV band projection at desired scale
+    proj = img.select('VV').projection().atScale(scale)
+
+    # Buffer so we catch edge pixels whose centers are just outside the field
+    buffer_dist = scale / 2
+    geom_buffered = geom.buffer(buffer_dist)
+
+    # Get pixel centers on the S1 grid
+    pixel_centers = (ee.Image.pixelLonLat()
+                     .reproject(proj)
+                     .sample(region=geom_buffered,
+                             projection=proj,
+                             geometries=True)
+                     .distinct(['longitude', 'latitude']))
+    #TODO: synchronize with main table
+
+    #TODO: growth stagelari add elemek lazimdi ya yox
+
+    try:
+        sampled = (img.select(BANDS)
+                     .sampleRegions(collection=pixel_centers,
+                                    projection=proj,
+                                    geometries=True))
+        info = sampled.getInfo()
+    except Exception as e:
+        print(f"  Error sampling S1 regions server-side: {e}")
+        return []
+
+    out = []
+    for f in info.get("features", []):
+        geom_f = (f.get("geometry") or {})
+        if geom_f.get("type") != "Point":
+            continue
+        lon, lat = geom_f.get("coordinates", [None, None])
+
+        props = f.get("properties", {}) or {}
+        s1_props = {}
+        for k, v in props.items():
+            if k in BANDS:
+                if v is None:
+                    s1_props[k] = None
+                else:
+                    # Sentinel-1 GRD in EE is sigma0 in *linear* units.
+                    # Keep as-is; you can convert to dB later if you want:
+                    #   10 * math.log10(v)
+                    try:
+                        s1_props[k] = float(v)
+                    except Exception:
+                        s1_props[k] = None
+
+        out.append({"lon": lon, "lat": lat, "properties": s1_props})
+
+    return out
+
 
 # =========================
 # FastAPI router
@@ -603,7 +671,6 @@ def get_graphs(rayon: str, ad: str, object_id: str):
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(8)
 
-        # Slightly larger, bold header with soft background
         for c in range(len(col_labels)):
             hcell = tbl[(0, c)]
             hcell.set_text_props(weight="bold")
@@ -612,7 +679,6 @@ def get_graphs(rayon: str, ad: str, object_id: str):
             hcell.set_linewidth(0.8)
             hcell.PAD = 0.18
 
-        # Style data cells: zebra stripes, thin dividers, padding
         n_rows = shown.shape[0]
         n_cols = shown.shape[1]
         for r in range(1, n_rows + 1):
@@ -702,7 +768,42 @@ def physical_today(body: Dict[str, Any] = Body(...)):
         },
       
     }
+
+def get_daily_hourly_temps(lat: float, lon: float, date: str, timezone: str = "UTC"):
+    #TODO: rainfall ve soil add elemek,solar radiation,humidity,snow,elevation
+    #TODO: meteonu daga salmaq,weather her gun olsun(gdd,t_base = 18,t_mean,t_max), bsi_max,min and ndvi mean and max
+
+    #TODO: VV
+
+    base_url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m",
+        "start_date": date,
+        "end_date": date,
+        "timezone": timezone,
+    }
+
+    resp = requests.get(base_url, params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    times = data["hourly"]["time"]
+    temps = data["hourly"]["temperature_2m"]  # already in °C
+
+    out = []
+    for t, temp in zip(times, temps):
+        out.append({
+            "time": t,             # ISO timestamp
+            "temperature_c": temp  # Celsius
+        })
+    return out
+
 def record_centers(center_list,cur,object_id,img_date,conn):
+    NDVI_MEAN = []
+    BSI_MEAN = []
+    #TODO: add max and min for 14 days
 
     for center in center_list:
         print(center)
@@ -742,9 +843,19 @@ def record_centers(center_list,cur,object_id,img_date,conn):
         red  = properties['B4']
         blue = properties['B2']
 
-        # small epsilon to avoid divide-by-zero
         den = (nir + 6*red - 7.5*blue + 1)
         evi = 2.5 * (nir - red) / den if den != 0 else None
+        temp_json = get_daily_hourly_temps(lat=lat,lon=lon,date=img_date)
+ 
+        NDVI_MEAN.append(ndvi)
+        BSI_MEAN.append(bsi)
+        ndvi_mean_7 = statistics.mean(NDVI_MEAN)
+        bsi_mean_7 = statistics.mean(BSI_MEAN)
+        if len(NDVI_MEAN) >=3 :
+            NDVI_MEAN = []
+        if len(BSI_MEAN) >=3:
+            BSI_MEAN = []
+
         cur.execute("""
     INSERT INTO sentinelcenter
       (ndvi, ndwi, evi,
@@ -752,23 +863,53 @@ def record_centers(center_list,cur,object_id,img_date,conn):
        ndmi, ndii, lswi,
        bsi, ndbi, ndti,
        swir_b11, swir_b12,
-       object_id, lon, lat, img_date)  VALUES
+       object_id, lon, lat, img_date,temp_Celsius,ndvi_mean,bsi_mean)  VALUES
 (%s, %s, %s,
        %s, %s, %s, %s,
        %s, %s, %s,
        %s, %s, %s,
        %s, %s,
-       %s, %s, %s, %s)
+       %s, %s, %s,
+        %s,%s,%s,%s)
 """, (
     ndvi, ndwi, evi,
     gndvi, mtci, re_r, grvi,
     ndmi, ndii, lswi,
     bsi, ndbi, ndti,
     swir_b11, swir_b12,
-    object_id, lon, lat, img_date
+    object_id, lon, lat, img_date,json.dumps(temp_json),ndvi_mean_7,bsi_mean_7
 ))
 
     conn.commit()
+def s1_images_in_range(aoi: ee.Geometry, start: str, end: str) -> ee.ImageCollection:
+    """
+    Return Sentinel-1 GRD images over AOI between start and end (YYYY-MM-DD).
+    Filters to land mode (IW) and VV+VH dual-pol.
+    """
+    col = (ee.ImageCollection("COPERNICUS/S1_GRD")
+           .filterBounds(aoi)
+           .filterDate(start, end)
+           .filter(ee.Filter.eq('instrumentMode', 'IW'))
+           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+           .select(['VV', 'VH']))
+    return col
+
+def list_s1_images_with_dates(aoi: ee.Geometry, start: str, end: str):
+    col = s1_images_in_range(aoi, start, end)
+    n = col.size().getInfo()
+    imgs = col.toList(n)
+
+    out = []
+    for i in range(n):
+        img = ee.Image(imgs.get(i))
+        date = ee.Date(img.get('system:time_start')).format('YYYY-MM-dd').getInfo()
+        out.append({
+            "image": img,      # ee.Image object
+            "date": date
+        })
+    return out
+
 # =========================
 # Batch process
 # =========================
@@ -795,75 +936,70 @@ def batch_process():
                     _lst     = s2_by_day.toList(total)
                     img_list = [ee.Image(_lst.get(i)) for i in range(total)]
                     print(img_list)
-                    
+                    images = list_s1_images_with_dates(geom, "2024-05-01", "2024-05-31")
+                    print(images)
+                    for item in images:
+                        img = item["image"]
+                        date = item["date"]
+                        centers = s1_sample_and_get_centers(img, geom, scale=10)
+                        for center in centers:
+                            cur.execute(
+                                        "SELECT 1 FROM sentinel1results WHERE object_id = %s AND img_date = %s AND lon = %s AND lat = %s",
+                                        (row["object_id"], date,center['lon'],center['lat']) 
+                                )
+                            if cur.fetchone():
+                                print("[INFO] Sentinel 1 data already exists in db.")
+                            else:
+                                print(center)
+                                properties = center['properties']
+                                ratio = properties['VV']/properties['VH']
+                                time = datetime.now()
+                                cur.execute("""
+                                            INSERT INTO  sentinel1results (object_id,ad, rayon, vv_mean, vh_mean,vv_vh_ratio,img_date,inserted_at,lon,lat)
+                                            VALUES (%s, %s,%s, %s, %s, %s,%s,%s,%s,%s);
+                                        """, (row["object_id"],row["ad"],row["rayon"],properties['VV'],properties['VH'],ratio,date,time,center['lon'],center['lat']))
+                                    
+                            print(date, len(centers))
+                            print(centers[0]["properties"])
+                        
                     for s2_img in img_list:
                         date_str = ee.Date(s2_img.get('system:time_start')) \
                             .format('YYYY-MM-dd').getInfo()
                         print(date_str)
 
-                        # centers = ee_sample_and_get_samples(s2_img,geom=geom)
-                        # record_centers(centers,cur,row["object_id"],date_str,conn)
+                        centers = ee_sample_and_get_samples(s2_img,geom=geom)
+                        record_centers(centers,cur,row["object_id"],date_str,conn)
+                        
 
                        
-                        if s2_img:
-                            s2_with_idx = s2_indices(s2_img).clip(geom)
-                            try:
-                                
-        #                         s2_stats = get_reduce_stats_with_timeout(
-        #                             s2_with_idx, geom,
-        #                             deadline=10,    
-        #                             tries=6,        
-        #                             tile_scales=(2,4,8)
-        # )
-        #                         print(s2_stats)
-        #                         cur.execute(
-        #                             "SELECT 1 FROM sentinelresults WHERE object_id = %s AND img_date = %s",
-        #                             (row["object_id"], s2_stats["date"]) 
-        #                         )
-                                # if cur.fetchone():
-                                #     print("Already exists.")
-                                # else:
-                                #     cur.execute("""
-                                #         INSERT INTO  sentinelresults (ad, rayon, object_id,ndvi, ndwi, evi, img_date)
-                                #         VALUES (%s, %s,%s, %s, %s, %s,%s);
-                                #     """, (row["ad"],row["rayon"],row["object_id"],s2_stats.get("NDVI"), s2_stats.get("NDWI"), s2_stats.get("EVI"),s2_stats.get("date")))
+        #                 if s2_img:
+        #                     s2_with_idx = s2_indices(s2_img).clip(geom)
+        #                     try:
+        #                         print(1)
+        # #                         s2_stats = get_reduce_stats_with_timeout(
+        # #                             s2_with_idx, geom,
+        # #                             deadline=10,    
+        # #                             tries=6,        
+        # #                             tile_scales=(2,4,8)
+        # # )
+        # #                         print(s2_stats)
+        # #                         cur.execute(
+        # #                             "SELECT 1 FROM sentinelresults WHERE object_id = %s AND img_date = %s",
+        # #                             (row["object_id"], s2_stats["date"]) 
+        # #                         )
+        #                         # if cur.fetchone():
+        #                         #     print("Already exists.")
+        #                         # else:
+        #                         #     cur.execute("""
+        #                         #         INSERT INTO  sentinelresults (ad, rayon, object_id,ndvi, ndwi, evi, img_date)
+        #                         #         VALUES (%s, %s,%s, %s, %s, %s,%s);
+        #                         #     """, (row["ad"],row["rayon"],row["object_id"],s2_stats.get("NDVI"), s2_stats.get("NDWI"), s2_stats.get("EVI"),s2_stats.get("date")))
                                    
 
-                                # Sentinel-1 processing: fetch S1 images in same date window and store VV/VH means
-                                try:
-                                    s1_start, s1_end = s2_start, s2_end
-                                    s1_col = s1_images(geom, s1_start, s1_end)
-                                    def add_date_s1(img):
-                                        return img.set('date_ymd', ee.Date(img.get('system:time_start')).format('YYYY-MM-dd'))
-                                    s1_by_day = s1_col.map(add_date_s1).distinct('date_ymd')
-                                    total_s1 = int(s1_by_day.size().getInfo())
-                                    s1_list = s1_by_day.toList(total_s1)
-                                    for si in range(total_s1):
-                                        s1_img = ee.Image(s1_list.get(si))
-                                        try:
-                                            s1_stats = get_reduce_s1_stats(s1_img, geom, deadline=10, tries=4, tile_scales=(1,2,4))
-                                        except Exception as e:
-                                            print(f"  Error obtaining S1 stats: {e}")
-                                            continue
-                                        if not s1_stats:
-                                            continue
-                                        img_date = s1_stats.get('date')
-                                        vv = s1_stats.get('vv_mean')
-                                        vh = s1_stats.get('vh_mean')
-                                        ratio = s1_stats.get('vv_vh_ratio')
-                                        try:
-                                            cur.execute("SELECT 1 FROM sentinel1results WHERE object_id=%s AND img_date=%s", (row['object_id'], img_date))
-                                            if not cur.fetchone():
-                                                cur.execute(
-                                                    "INSERT INTO sentinel1results (object_id, ad, rayon, vv_mean, vh_mean, vv_vh_ratio, img_date) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                                                    (row['object_id'], row['ad'], row['rayon'], vv, vh, ratio, img_date)
-                                                )
-                                        except Exception as e:
-                                            print(f"Error inserting S1 row: {e}")
-                                except Exception as e:
-                                    print(f"Error fetching S1 collection: {e}")
-                            except Exception as e:
-                                print("Something went wrong")
+        #                         # Sentinel-1 processing: fetch S1 images in same date window and store VV/VH means
+                                
+        #                     except Exception as e:
+        #                         print("Something went wrong")
                         
 
                                 
@@ -876,6 +1012,8 @@ def batch_process():
                     conn.commit()
                     if (i + 1) % 50 == 0:
                         print(f"[progress] committed parcels: {i+1}/{len(rows)}")
+            
+
 
 
 
