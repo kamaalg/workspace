@@ -7,6 +7,7 @@ import matplotlib
 matplotlib.use("Agg")
 import ee
 import statistics
+from collections import deque
 
 from fastapi import APIRouter, Body, HTTPException
 import matplotlib.dates as mdates
@@ -23,6 +24,8 @@ import requests
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
 load_dotenv()
+
+T_BASE = 18
 # =========================
 # Initialization & time
 # =========================
@@ -134,11 +137,14 @@ def s2_best_image(
         clouds = ee.Image(img.get('clouds')).select('probability')
         scl = img.select('SCL')
         cloud_ok = clouds.lt(prob_thresh)
-        scl_ok = (scl.neq(3)  
-                .And(scl.neq(8)) 
-                .And(scl.neq(9)) 
-                .And(scl.neq(10)) 
-                .And(scl.neq(11)))#TODO: meaning
+        #TODO:more exploratory
+        scl_ok = (scl.neq(3)  # exclude cloud shadows()
+          .And(scl.neq(8))  # exclude medium-probability clouds
+          .And(scl.neq(9))  # exclude high-probability clouds
+          .And(scl.neq(10)) # exclude thin cirrus
+          .And(scl.neq(11)) # exclude snow/ice
+)
+
         veg_only = scl.eq(4)
 
         return img.updateMask(cloud_ok.And(scl_ok).And(veg_only))
@@ -318,42 +324,6 @@ def insert_sentinelraw(cur, img: ee.Image, geom, ad: str, rayon: str, object_id:
         print(f"  Error inserting/updating sentinelraw row: {e}")
 
 
-def sample_parcel_points(img: ee.Image, geom: ee.Geometry, scale: int = 10, max_points: int = 5000):
-
-    bands = ["B2","B3","B4","B5","B6","B7","B8","B8A","B11","B12"]
-    fc = img.select(bands).sample(region=geom, scale=scale, geometries=True)
-    info = None
-    try:
-        info = fc.getInfo()
-    except Exception as e:
-        print(f"  Error fetching samples via getInfo(): {e}")
-        return []
-
-    features = info.get("features", [])
-    if len(features) > max_points:
-        print(f"  Too many samples ({len(features)}) - increase max_points or use export workflow.")
-        return []
-
-    out = []
-    for f in features:
-        props = f.get("properties", {})
-        geom_f = f.get("geometry")
-        if not geom_f or geom_f.get("type") != "Point":
-            continue
-        lon, lat = geom_f.get("coordinates", [None, None])
-        # scale reflectance to 0..1 when present
-        scaled_props = {}
-        for b, v in props.items():
-            if v is None:
-                scaled_props[b] = None
-            else:
-                try:
-                    scaled_props[b] = float(v) * 0.0001
-                except Exception:
-                    scaled_props[b] = None
-
-        out.append({"lon": lon, "lat": lat, "properties": scaled_props})
-    return out
 
 
 
@@ -430,9 +400,6 @@ def s1_sample_and_get_centers(img, geom: ee.Geometry, scale: int = 10):
                              projection=proj,
                              geometries=True)
                      .distinct(['longitude', 'latitude']))
-    #TODO: synchronize with main table
-
-    #TODO: growth stagelari add elemek lazimdi ya yox
 
     try:
         sampled = (img.select(BANDS)
@@ -770,40 +737,96 @@ def physical_today(body: Dict[str, Any] = Body(...)):
     }
 
 def get_daily_hourly_temps(lat: float, lon: float, date: str, timezone: str = "UTC"):
-    #TODO: rainfall ve soil add elemek,solar radiation,humidity,snow,elevation
-    #TODO: meteonu daga salmaq,weather her gun olsun(gdd,t_base = 18,t_mean,t_max), bsi_max,min and ndvi mean and max
 
-    #TODO: VV
-
-    base_url = "https://api.open-meteo.com/v1/forecast"
-    params = {
+    try:
+        base_url = "https://api.open-meteo.com/v1/forecast"
+        params = {
         "latitude": lat,
         "longitude": lon,
-        "hourly": "temperature_2m",
-        "start_date": date,
+        "hourly": ",".join([
+            "temperature_2m",
+            "precipitation",        # total precipitation (rain + snow)
+            "rain",                 # rain only
+            "snowfall",             # snowfall
+            "relativehumidity_2m",  # humidity
+            "shortwave_radiation",  # solar radiation
+            "soil_moisture_0_1cm",  # soil variables
+            "soil_moisture_1_3cm",
+            "soil_temperature_0cm",
+            "snow_depth",           # snow on ground
+        ]),
+        "start_date": date,   # "YYYY-MM-DD"
         "end_date": date,
         "timezone": timezone,
-    }
+            }
 
-    resp = requests.get(base_url, params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+        resp = requests.get(base_url, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
 
-    times = data["hourly"]["time"]
-    temps = data["hourly"]["temperature_2m"]  # already in °C
+        times = data["hourly"]["time"]
+        temps = data["hourly"]["temperature_2m"]
+        precip = data["hourly"]["precipitation"]
+        rain = data["hourly"]["rain"]
+        snowfall = data["hourly"]["snowfall"]
+        humidity = data["hourly"]["relativehumidity_2m"]
+        shortwave = data["hourly"]["shortwave_radiation"]
+        soil_moisture_0_1 = data["hourly"]["soil_moisture_0_1cm"]
+        soil_temp_0 = data["hourly"]["soil_temperature_0cm"]
+        snow_depth = data["hourly"]["snow_depth"]
 
-    out = []
-    for t, temp in zip(times, temps):
-        out.append({
-            "time": t,             # ISO timestamp
-            "temperature_c": temp  # Celsius
-        })
-    return out
+        elevation = data["elevation"]  
 
+        
+
+
+        out = []
+        for t, temp in zip(times, temps):
+            out.append({
+                "time": t,             # ISO timestamp
+                "temperature_c": temp,
+                "precipitation":precip,
+                "rainfall":rain,
+                "snowfall":snowfall,
+                "humidity":humidity,
+                "shortwave":shortwave,
+                "soil_moisture":soil_moisture_0_1,
+                "soil_temp_0":soil_temp_0,
+                "snow_depth":snow_depth,
+                "elevation":elevation
+                # Celsius
+            })
+        return out
+    except:
+        for t,temp in zip(times,temps):
+            out.append({
+                "time": None,             # ISO timestamp
+                "temperature_c": None,
+                "precipitation":None,
+                "rainfall":None,
+                "snowfall":None,
+                "humidity":None,
+                "shortwave":None,
+                "soil_moisture":None,
+                "soil_temp_0":None,
+                "snow_depth":None,
+                "elevation":None
+                # Celsius
+            })
+        return out
+def calculate_t_min_max(temp_json):
+    temp_list = deque()
+    for i in range(len(temp_json)):
+        temp_list.append(temp_json[i]["temperature_c"])
+    temp_min = min(temp_list)
+    temp_max = max(temp_list)
+    print(temp_min,temp_max)
+    
+    return temp_min,temp_max
+    #TODO: test between sentinel 2A and 2B and sr harmonized
 def record_centers(center_list,cur,object_id,img_date,conn):
-    NDVI_MEAN = []
-    BSI_MEAN = []
-    #TODO: add max and min for 14 days
+    ndvi_window = deque(maxlen=3)
+    bsi_window = deque(maxlen=3)
 
     for center in center_list:
         print(center)
@@ -846,16 +869,21 @@ def record_centers(center_list,cur,object_id,img_date,conn):
         den = (nir + 6*red - 7.5*blue + 1)
         evi = 2.5 * (nir - red) / den if den != 0 else None
         temp_json = get_daily_hourly_temps(lat=lat,lon=lon,date=img_date)
- 
-        NDVI_MEAN.append(ndvi)
-        BSI_MEAN.append(bsi)
-        ndvi_mean_7 = statistics.mean(NDVI_MEAN)
-        bsi_mean_7 = statistics.mean(BSI_MEAN)
-        if len(NDVI_MEAN) >=3 :
-            NDVI_MEAN = []
-        if len(BSI_MEAN) >=3:
-            BSI_MEAN = []
 
+        ndvi_window.append(ndvi)
+        bsi_window.append(bsi)
+        ndvi_mean_3 = statistics.mean(ndvi_window)
+        ndvi_min_3 = min(ndvi_window)
+        ndvi_max_3 = max(ndvi_window)
+
+        bsi_mean_3 = statistics.mean(bsi_window)
+        bsi_min_3 = min(bsi_window)
+        bsi_max_3 = max(bsi_window)
+
+        temp_min, temp_max = calculate_t_min_max(temp_json)
+        gdd_raw = (temp_max + temp_min) / 2 - T_BASE
+        gdd = max(0, gdd_raw)
+        #TODO: I need  to add gdd and cgdd
         cur.execute("""
     INSERT INTO sentinelcenter
       (ndvi, ndwi, evi,
@@ -863,22 +891,23 @@ def record_centers(center_list,cur,object_id,img_date,conn):
        ndmi, ndii, lswi,
        bsi, ndbi, ndti,
        swir_b11, swir_b12,
-       object_id, lon, lat, img_date,temp_Celsius,ndvi_mean,bsi_mean)  VALUES
+       object_id, lon, lat, img_date,meteo_data,ndvi_mean,bsi_mean,ndvi_min,ndvi_max,bsi_min,bsi_max,gdd)  VALUES
 (%s, %s, %s,
        %s, %s, %s, %s,
        %s, %s, %s,
        %s, %s, %s,
        %s, %s,
        %s, %s, %s,
-        %s,%s,%s,%s)
+        %s,%s,%s,%s,%s,%s,%s,%s,%s)
 """, (
     ndvi, ndwi, evi,
     gndvi, mtci, re_r, grvi,
     ndmi, ndii, lswi,
     bsi, ndbi, ndti,
     swir_b11, swir_b12,
-    object_id, lon, lat, img_date,json.dumps(temp_json),ndvi_mean_7,bsi_mean_7
+    object_id, lon, lat, img_date,json.dumps(temp_json),ndvi_mean_3,bsi_mean_3,ndvi_min_3,ndvi_max_3,bsi_min_3,bsi_max_3,gdd
 ))
+        
 
     conn.commit()
 def s1_images_in_range(aoi: ee.Geometry, start: str, end: str) -> ee.ImageCollection:
@@ -921,12 +950,12 @@ def batch_process():
             with conn.cursor() as cur:
                 cur.execute("SELECT  object_id,ad,rayon,geom FROM parcels WHERE geom IS NOT NULL")
                 rows = cur.fetchall()
-                for i,row in enumerate(rows[-5:]):
+                for i,row in enumerate(rows[-1:]):
                     
                     geom = to_ee_geometry(row["geom"], 3857)
 
                     s2_start, s2_end = daterange(days_back=30)
-                    s2_imgs = s2_best_image(geom, s2_start,s2_end,max_cloud=60)
+                    s2_imgs = s2_best_image(geom, s2_start,s2_end,max_cloud=80)
                     def add_date(img):
                         return img.set('date_ymd', ee.Date(img.get('system:time_start')).format('YYYY-MM-dd'))
 
@@ -936,7 +965,7 @@ def batch_process():
                     _lst     = s2_by_day.toList(total)
                     img_list = [ee.Image(_lst.get(i)) for i in range(total)]
                     print(img_list)
-                    images = list_s1_images_with_dates(geom, "2024-05-01", "2024-05-31")
+                    images = list_s1_images_with_dates(geom,  s2_start, s2_end)
                     print(images)
                     for item in images:
                         img = item["image"]
