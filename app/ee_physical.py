@@ -145,9 +145,10 @@ def s2_best_image(
           .And(scl.neq(11)) # exclude snow/ice
 )
 
-        veg_only = scl.eq(4)
+        # land_ok = scl.eq(4).Or(scl.eq(5))
 
-        return img.updateMask(cloud_ok.And(scl_ok).And(veg_only))
+
+        return img.updateMask(cloud_ok.And(scl_ok))
 
     ranked_masked = ranked.map(apply_mask)
     print(type(ranked_masked))
@@ -338,17 +339,29 @@ def ee_sample_and_get_samples(img, geom: ee.Geometry, scale: int = 10):
     proj = img.select('B2').projection().atScale(scale)
     # buffer_dist = scale / 2  
     # geom_buffered = geom.buffer(buffer_dist)
+    print("Area (m²):", geom.area(10).getInfo())
+    print("Area (km²):", geom.area(10).getInfo() / 1e6)
+
+    print("Bounds:", geom.bounds().coordinates().getInfo())
+
+    px = (ee.Image.pixelLonLat()
+        .reproject(proj)
+        .sample(region=geom, projection=proj, geometries=True))
+    print("pixel_centers count:", px.size().getInfo())
+
     pixel_centers = (ee.Image.pixelLonLat()
                      .reproject(proj)
                      .sample(region=geom, projection=proj, geometries=True)
                      .distinct(['longitude','latitude']))
+    print(pixel_centers.size().getInfo())
 
     try:
         sampled = (img.select(BANDS)
                      .sampleRegions(collection=pixel_centers,
                                     projection=proj,
                                     geometries=True))
-        info = sampled.getInfo() 
+        info = sampled.getInfo()
+        print("Sampled size",sampled.size().getInfo()) 
     except Exception as e:
         print(f"  Error sampling regions server-side: {e}")
         return []
@@ -736,84 +749,89 @@ def physical_today(body: Dict[str, Any] = Body(...)):
       
     }
 
-def get_daily_hourly_temps(lat: float, lon: float, date: str, timezone: str = "UTC"):
 
-    try:
-        base_url = "https://api.open-meteo.com/v1/forecast"
-        params = {
+def get_daily_hourly_temps(
+    lat: float,
+    lon: float,
+    date: str,
+    timezone: str = "UTC",
+    max_retries: int = 3,
+    timeout: int = 10,
+    backoff_factor: float = 2.0,
+) :
+    """
+    Fetch hourly meteo data for a single day with retry + timeout.
+
+    On success: returns one dict per hour.
+    On repeated failure: returns an empty list.
+    """
+    base_url = "https://api.open-meteo.com/v1/forecast"
+    params = {
         "latitude": lat,
         "longitude": lon,
         "hourly": ",".join([
             "temperature_2m",
-            "precipitation",        # total precipitation (rain + snow)
-            "rain",                 # rain only
-            "snowfall",             # snowfall
-            "relativehumidity_2m",  # humidity
-            "shortwave_radiation",  # solar radiation
-            "soil_moisture_0_1cm",  # soil variables
+            "precipitation",
+            "rain",
+            "snowfall",
+            "relativehumidity_2m",
+            "shortwave_radiation",
+            "soil_moisture_0_1cm",
             "soil_moisture_1_3cm",
             "soil_temperature_0cm",
-            "snow_depth",           # snow on ground
+            "snow_depth",
         ]),
-        "start_date": date,   # "YYYY-MM-DD"
+        "start_date": date,
         "end_date": date,
         "timezone": timezone,
-            }
+    }
 
-        resp = requests.get(base_url, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+    last_error: Optional[Exception] = None
 
-        times = data["hourly"]["time"]
-        temps = data["hourly"]["temperature_2m"]
-        precip = data["hourly"]["precipitation"]
-        rain = data["hourly"]["rain"]
-        snowfall = data["hourly"]["snowfall"]
-        humidity = data["hourly"]["relativehumidity_2m"]
-        shortwave = data["hourly"]["shortwave_radiation"]
-        soil_moisture_0_1 = data["hourly"]["soil_moisture_0_1cm"]
-        soil_temp_0 = data["hourly"]["soil_temperature_0cm"]
-        snow_depth = data["hourly"]["snow_depth"]
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(base_url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
 
-        elevation = data["elevation"]  
+            times = data["hourly"]["time"]
+            temps = data["hourly"]["temperature_2m"]
+            precip = data["hourly"]["precipitation"]
+            rain = data["hourly"]["rain"]
+            snowfall = data["hourly"]["snowfall"]
+            humidity = data["hourly"]["relativehumidity_2m"]
+            shortwave = data["hourly"]["shortwave_radiation"]
+            soil_moisture_0_1 = data["hourly"]["soil_moisture_0_1cm"]
+            soil_temp_0 = data["hourly"]["soil_temperature_0cm"]
+            snow_depth = data["hourly"]["snow_depth"]
+            elevation = data.get("elevation")
 
-        
+            out= []
+            for i, t in enumerate(times):
+                out.append({
+                    "time": t,
+                    "temperature_c": temps[i],
+                    "precipitation": precip[i],
+                    "rainfall": rain[i],
+                    "snowfall": snowfall[i],
+                    "humidity": humidity[i],
+                    "shortwave": shortwave[i],
+                    "soil_moisture": soil_moisture_0_1[i],
+                    "soil_temp_0": soil_temp_0[i],
+                    "snow_depth": snow_depth[i],
+                    "elevation": elevation,
+                })
+            return out
 
+        except (requests.RequestException, KeyError, ValueError,Exception) as e:
+            last_error = e
+            if attempt == max_retries - 1:
+                break
+            sleep_time = backoff_factor ** attempt
+            time.sleep(sleep_time)
 
-        out = []
-        for t, temp in zip(times, temps):
-            out.append({
-                "time": t,             # ISO timestamp
-                "temperature_c": temp,
-                "precipitation":precip,
-                "rainfall":rain,
-                "snowfall":snowfall,
-                "humidity":humidity,
-                "shortwave":shortwave,
-                "soil_moisture":soil_moisture_0_1,
-                "soil_temp_0":soil_temp_0,
-                "snow_depth":snow_depth,
-                "elevation":elevation
-                # Celsius
-            })
-        return out
-    except:
-        for t,temp in zip(times,temps):
-            out.append({
-                "time": None,             # ISO timestamp
-                "temperature_c": None,
-                "precipitation":None,
-                "rainfall":None,
-                "snowfall":None,
-                "humidity":None,
-                "shortwave":None,
-                "soil_moisture":None,
-                "soil_temp_0":None,
-                "snow_depth":None,
-                "elevation":None
-                # Celsius
-            })
-        return out
+    
+    return []
 def calculate_t_min_max(temp_json):
     temp_list = deque()
     for i in range(len(temp_json)):
@@ -990,13 +1008,15 @@ def batch_process():
                                     
                             print(date, len(centers))
                             print(centers[0]["properties"])
-                        
+                    print(img_list,len(img_list))
                     for s2_img in img_list:
                         date_str = ee.Date(s2_img.get('system:time_start')) \
                             .format('YYYY-MM-dd').getInfo()
                         print(date_str)
+                        
 
                         centers = ee_sample_and_get_samples(s2_img,geom=geom)
+                        print(len(centers))
                         record_centers(centers,cur,row["object_id"],date_str,conn)
                         
 
@@ -1035,8 +1055,7 @@ def batch_process():
 
                             
                     
-                    else:
-                        print("  No suitable Sentinel-2 image found.")
+                    
                     print("Saving to db for parcel",row["object_id"])
                     conn.commit()
                     if (i + 1) % 50 == 0:
