@@ -137,7 +137,6 @@ def s2_best_image(
         clouds = ee.Image(img.get('clouds')).select('probability')
         scl = img.select('SCL')
         cloud_ok = clouds.lt(prob_thresh)
-        #TODO:more exploratory
         scl_ok = (scl.neq(3)  # exclude cloud shadows()
           .And(scl.neq(8))  # exclude medium-probability clouds
           .And(scl.neq(9))  # exclude high-probability clouds
@@ -759,12 +758,7 @@ def get_daily_hourly_temps(
     timeout: int = 10,
     backoff_factor: float = 2.0,
 ) :
-    """
-    Fetch hourly meteo data for a single day with retry + timeout.
 
-    On success: returns one dict per hour.
-    On repeated failure: returns an empty list.
-    """
     base_url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
