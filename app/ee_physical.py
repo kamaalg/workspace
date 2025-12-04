@@ -338,15 +338,9 @@ def ee_sample_and_get_samples(img, geom: ee.Geometry, scale: int = 10):
     proj = img.select('B2').projection().atScale(scale)
     # buffer_dist = scale / 2  
     # geom_buffered = geom.buffer(buffer_dist)
-    print("Area (m²):", geom.area(10).getInfo())
-    print("Area (km²):", geom.area(10).getInfo() / 1e6)
+  
 
-    print("Bounds:", geom.bounds().coordinates().getInfo())
-
-    px = (ee.Image.pixelLonLat()
-        .reproject(proj)
-        .sample(region=geom, projection=proj, geometries=True))
-    print("pixel_centers count:", px.size().getInfo())
+    
 
     pixel_centers = (ee.Image.pixelLonLat()
                      .reproject(proj)
@@ -830,11 +824,14 @@ def calculate_t_min_max(temp_json):
     temp_list = deque()
     for i in range(len(temp_json)):
         temp_list.append(temp_json[i]["temperature_c"])
-    temp_min = min(temp_list)
-    temp_max = max(temp_list)
-    print(temp_min,temp_max)
-    
-    return temp_min,temp_max
+    if len(temp_list) != 0:
+        temp_min = min(temp_list)
+        temp_max = max(temp_list)
+        print(temp_min,temp_max)
+        
+        return temp_min,temp_max
+    else:
+        return None,None
     #TODO: test between sentinel 2A and 2B and sr harmonized
 def record_centers(center_list,cur,object_id,img_date,conn):
     ndvi_window = deque(maxlen=3)
@@ -893,9 +890,13 @@ def record_centers(center_list,cur,object_id,img_date,conn):
         bsi_max_3 = max(bsi_window)
 
         temp_min, temp_max = calculate_t_min_max(temp_json)
-        gdd_raw = (temp_max + temp_min) / 2 - T_BASE
-        gdd = max(0, gdd_raw)
-        #TODO: I need  to add gdd and cgdd
+        if temp_min != None or temp_max != None:
+            gdd_raw = (temp_max + temp_min) / 2 - T_BASE
+            gdd = max(0, gdd_raw)
+        else:
+            gdd = 0
+        #TODO:finish model for null values
+        
         cur.execute("""
     INSERT INTO sentinelcenter
       (ndvi, ndwi, evi,
@@ -962,11 +963,11 @@ def batch_process():
             with conn.cursor() as cur:
                 cur.execute("SELECT  object_id,ad,rayon,geom FROM parcels WHERE geom IS NOT NULL")
                 rows = cur.fetchall()
-                for i,row in enumerate(rows[-1:]):
+                for i,row in enumerate(rows):
                     
                     geom = to_ee_geometry(row["geom"], 3857)
 
-                    s2_start, s2_end = daterange(days_back=30)
+                    s2_start, s2_end = daterange(days_back=1000)
                     s2_imgs = s2_best_image(geom, s2_start,s2_end,max_cloud=80)
                     def add_date(img):
                         return img.set('date_ymd', ee.Date(img.get('system:time_start')).format('YYYY-MM-dd'))

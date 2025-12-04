@@ -62,6 +62,7 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: /home/airflow/.config/gcloud/application_default_credentials.json
       GOOGLE_CLOUD_PROJECT: kamal-vuln-scanner
     volumes:
+    - ./secrets/ee-service-account.json:/opt/airflow/secrets/ee-service-account.json:ro
     - ../:/workspace
     - ../airflow/dags:/opt/airflow/dags
     - airflow_logs:/opt/airflow/logs         
